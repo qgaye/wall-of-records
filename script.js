@@ -113,6 +113,9 @@ const playlistDialog = document.querySelector("#playlistDialog");
 const playlistForm = document.querySelector("#playlistImportForm");
 const playlistUrl = document.querySelector("#playlistUrl");
 const playlistStatus = document.querySelector("#playlistImportStatus");
+const playlistDialogKicker = document.querySelector("#playlistDialogKicker");
+const playlistHint = document.querySelector("#playlistHint");
+const platformOptions = [...document.querySelectorAll('input[name="playlistPlatform"]')];
 const importButton = document.querySelector("#openPlaylistImport");
 const parsePlaylistButton = document.querySelector("#parsePlaylistButton");
 const requiredCoverCount = document.querySelector("#requiredCoverCount");
@@ -131,6 +134,23 @@ let importedPlaylistName = "网易云歌单";
 let shareFeedbackTimer;
 let shareImageObjectUrl;
 let shareImageGeneration = 0;
+
+const playlistPlatforms = {
+  netease: {
+    name: "网易云音乐",
+    kicker: "NETEASE PLAYLIST",
+    endpoint: "/api/netease-playlist",
+    placeholder: "https://music.163.com/playlist?id=...",
+    hint: "支持网易云标准歌单链接、分享短链，也可以直接输入歌单 ID。",
+  },
+  qq: {
+    name: "QQ 音乐",
+    kicker: "QQ MUSIC PLAYLIST",
+    endpoint: "/api/qq-playlist",
+    placeholder: "https://i2.y.qq.com/.../playlist.html?id=...",
+    hint: "支持 QQ 音乐歌单分享链接，也可以直接输入歌单 ID。",
+  },
+};
 
 function getSceneSize(layout) {
   return {
@@ -284,7 +304,10 @@ function decodeBase64Url(value) {
 function isAllowedSharedCover(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && /(^|\.)music\.126\.net$/i.test(url.hostname);
+    return (
+      url.protocol === "https:" &&
+      (/(^|\.)music\.126\.net$/i.test(url.hostname) || url.hostname.toLowerCase() === "y.gtimg.cn")
+    );
   } catch {
     return false;
   }
@@ -641,6 +664,21 @@ function setImportLoading(isLoading) {
   playlistForm.setAttribute("aria-busy", String(isLoading));
   parsePlaylistButton.disabled = isLoading;
   playlistUrl.disabled = isLoading;
+  platformOptions.forEach((option) => {
+    option.disabled = isLoading;
+  });
+}
+
+function getSelectedPlatform() {
+  return platformOptions.find((option) => option.checked)?.value || "netease";
+}
+
+function updatePlatformUI() {
+  const platform = playlistPlatforms[getSelectedPlatform()] || playlistPlatforms.netease;
+  playlistDialogKicker.textContent = platform.kicker;
+  playlistUrl.placeholder = platform.placeholder;
+  playlistHint.textContent = platform.hint;
+  setImportStatus();
 }
 
 function stopImportRequest() {
@@ -665,10 +703,11 @@ function closeImportDialog() {
 async function importPlaylist(event) {
   event.preventDefault();
   const layout = layoutSettings[grid.dataset.layout || "4x2"];
+  const platform = playlistPlatforms[getSelectedPlatform()] || playlistPlatforms.netease;
   const value = playlistUrl.value.trim();
 
   if (!value) {
-    setImportStatus("请先粘贴网易云歌单链接。", "error");
+    setImportStatus(`请先粘贴${platform.name}歌单链接。`, "error");
     playlistUrl.focus();
     return;
   }
@@ -684,7 +723,7 @@ async function importPlaylist(event) {
   setImportStatus(`正在读取歌单，并随机挑选 ${layout.visible} 张封面…`, "loading");
 
   try {
-    const response = await fetch("/api/netease-playlist", {
+    const response = await fetch(platform.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: value, limit: layout.visible }),
@@ -726,6 +765,7 @@ document.querySelector("#closePlaylistDialog").addEventListener("click", closeIm
 document.querySelector("#cancelPlaylistImport").addEventListener("click", closeImportDialog);
 document.querySelector("#closeShareImageDialog").addEventListener("click", closeShareImageDialog);
 playlistForm.addEventListener("submit", importPlaylist);
+platformOptions.forEach((option) => option.addEventListener("change", updatePlatformUI));
 playlistDialog.addEventListener("cancel", stopImportRequest);
 playlistDialog.addEventListener("click", (event) => {
   if (event.target === playlistDialog) closeImportDialog();

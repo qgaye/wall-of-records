@@ -26,7 +26,7 @@ function writeJson(response, status, body) {
 }
 
 function isAllowedCoverHost(hostname) {
-  return /(^|\.)music\.126\.net$/i.test(hostname);
+  return /(^|\.)music\.126\.net$/i.test(hostname) || hostname.toLowerCase() === "y.gtimg.cn";
 }
 
 function directPlaylistId(value) {
@@ -116,6 +116,44 @@ async function resolveSharedPlaylistId(value) {
   }
 
   throw new Error("无法从这条分享链接中识别歌单 ID");
+}
+
+function isAllowedQQHost(hostname) {
+  const host = hostname.toLowerCase();
+  return host === "y.qq.com" || host.endsWith(".y.qq.com");
+}
+
+function resolveQQPlaylist(value) {
+  const raw = String(value || "").trim();
+  if (/^\d{4,}$/.test(raw)) {
+    return { playlistId: raw, encodedHostUin: "" };
+  }
+
+  const sharedUrl = firstUrl(raw);
+  if (!sharedUrl) {
+    throw new Error("没有找到有效的 QQ 音乐歌单链接或歌单 ID");
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(sharedUrl);
+  } catch {
+    throw new Error("歌单链接格式不正确");
+  }
+
+  if (!isAllowedQQHost(parsed.hostname)) {
+    throw new Error("这不是有效的 QQ 音乐歌单链接");
+  }
+
+  const playlistId = parsed.searchParams.get("id") || parsed.searchParams.get("disstid");
+  if (!/^\d{4,}$/.test(playlistId || "")) {
+    throw new Error("无法从这条 QQ 音乐链接中识别歌单 ID");
+  }
+
+  return {
+    playlistId,
+    encodedHostUin: parsed.searchParams.get("hosteuin") || "",
+  };
 }
 
 function coverUrl(value) {
@@ -218,6 +256,76 @@ async function fetchPlaylistPayload(playlistId) {
   throw lastError || new Error("网易云歌单接口暂时不可用");
 }
 
+async function fetchQQPlaylist(playlistId, encodedHostUin) {
+  try {
+    const response = await fetch("https://u.y.qq.com/cgi-bin/musicu.fcg", {
+      method: "POST",
+      headers: {
+        Accept: "application/json,text/plain,*/*",
+        "Content-Type": "application/json",
+        Origin: "https://y.qq.com",
+        Referer: "https://y.qq.com/",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+      },
+      body: JSON.stringify({
+        comm: { ct: 23, cv: 200600 },
+        req_0: {
+          module: "music.srfDissInfo.aiDissInfo",
+          method: "uniform_get_Dissinfo",
+          param: {
+            disstid: Number(playlistId),
+            enc_host_uin: encodedHostUin,
+            tag: 1,
+            userinfo: 1,
+            song_begin: 0,
+            song_num: 500,
+            orderlist: 1,
+          },
+        },
+      }),
+      signal: AbortSignal.timeout(12_000),
+    });
+
+    if (!response.ok) throw new Error(`QQ 音乐返回了 ${response.status} 状态`);
+    const payload = await response.json();
+    if (payload.code !== 0 || payload.req_0?.code !== 0 || !payload.req_0?.data) {
+      throw new Error(payload.req_0?.msg || payload.msg || "QQ 音乐歌单接口返回异常");
+    }
+    return payload.req_0.data;
+  } catch (error) {
+    if (error?.name === "TimeoutError") {
+      throw new Error("连接 QQ 音乐超时，请稍后重试");
+    }
+    throw error;
+  }
+}
+
+function normalizeQQTracks(data) {
+  const playlist = data?.dirinfo || {};
+  const tracks = (data?.songlist || [])
+    .map((track) => {
+      const albumMid = track.album?.mid;
+      if (!albumMid) return null;
+
+      return {
+        id: String(track.mid || track.id || ""),
+        name: track.name || track.title || "未命名歌曲",
+        artist: (track.singer || []).map((artist) => artist.name).filter(Boolean).join(" / ") || "未知艺人",
+        album: track.album?.name || track.album?.title || "未知专辑",
+        cover: `https://y.gtimg.cn/music/photo_new/T002R800x800M000${albumMid}.jpg`,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    id: String(playlist.id || ""),
+    name: playlist.title || "QQ 音乐歌单",
+    trackCount: Number(playlist.songnum) || tracks.length,
+    tracks,
+  };
+}
+
 async function readJsonBody(request) {
   const chunks = [];
   let size = 0;
@@ -235,7 +343,7 @@ async function readJsonBody(request) {
   }
 }
 
-async function handlePlaylistApi(request, response) {
+async function handleNeteasePlaylistApi(request, response) {
   if (request.method !== "POST") {
     writeJson(response, 405, { error: "请使用 POST 请求" });
     return;
@@ -274,6 +382,44 @@ async function handlePlaylistApi(request, response) {
   }
 }
 
+async function handleQQPlaylistApi(request, response) {
+  if (request.method !== "POST") {
+    writeJson(response, 405, { error: "请使用 POST 请求" });
+    return;
+  }
+
+  try {
+    const body = await readJsonBody(request);
+    const requestedLimit = Number(body.limit);
+    const limit = Number.isInteger(requestedLimit)
+      ? Math.min(Math.max(requestedLimit, 1), 24)
+      : 8;
+    const { playlistId, encodedHostUin } = resolveQQPlaylist(body.url);
+    const playlist = normalizeQQTracks(await fetchQQPlaylist(playlistId, encodedHostUin));
+
+    if (!playlist.tracks.length) {
+      throw new Error(
+        playlist.trackCount === 0
+          ? "这个 QQ 音乐歌单目前没有歌曲"
+          : "歌单存在，但 QQ 音乐没有返回可用的专辑封面",
+      );
+    }
+    if (playlist.tracks.length < limit) {
+      throw new Error(`这个歌单只有 ${playlist.tracks.length} 首可用歌曲，当前布局需要 ${limit} 首`);
+    }
+
+    const selected = randomTracks(playlist.tracks, limit);
+    writeJson(response, 200, {
+      playlist: { id: playlist.id || playlistId, name: playlist.name },
+      requested: limit,
+      available: playlist.tracks.length,
+      tracks: selected,
+    });
+  } catch (error) {
+    writeJson(response, 400, { error: error.message || "QQ 音乐歌单解析失败" });
+  }
+}
+
 async function handleCoverProxy(request, response) {
   if (request.method !== "GET") {
     writeJson(response, 405, { error: "请使用 GET 请求" });
@@ -284,14 +430,16 @@ async function handleCoverProxy(request, response) {
     const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     const source = new URL(requestUrl.searchParams.get("url") || "");
     if (source.protocol !== "https:" || !isAllowedCoverHost(source.hostname) || source.port) {
-      throw new Error("只允许读取网易云专辑封面");
+      throw new Error("只允许读取受支持音乐平台的专辑封面");
     }
+
+    const isQQCover = source.hostname.toLowerCase() === "y.gtimg.cn";
 
     const imageResponse = await fetch(source, {
       redirect: "error",
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
-        Referer: "https://music.163.com/",
+        Referer: isQQCover ? "https://y.qq.com/" : "https://music.163.com/",
         "User-Agent": "Mozilla/5.0 RecordWall/1.0",
       },
       signal: AbortSignal.timeout(12_000),
@@ -350,7 +498,12 @@ async function serveStatic(request, response) {
 const server = http.createServer(async (request, response) => {
   const pathname = new URL(request.url, `http://${request.headers.host || "localhost"}`).pathname;
   if (pathname === "/api/netease-playlist") {
-    await handlePlaylistApi(request, response);
+    await handleNeteasePlaylistApi(request, response);
+    return;
+  }
+
+  if (pathname === "/api/qq-playlist") {
+    await handleQQPlaylistApi(request, response);
     return;
   }
 

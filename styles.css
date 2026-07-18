@@ -459,6 +459,65 @@ button,
   font-weight: 650;
 }
 
+.platform-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 18px;
+  padding: 4px;
+  border: 1px solid rgba(64, 61, 54, 0.16);
+  background: rgba(71, 67, 59, 0.045);
+}
+
+.platform-switch legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.platform-switch label {
+  position: relative;
+  cursor: pointer;
+}
+
+.platform-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.platform-switch span {
+  display: grid;
+  min-height: 34px;
+  place-items: center;
+  color: #817c72;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  transition: color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.platform-switch input:checked + span {
+  background: rgba(255, 255, 255, 0.78);
+  color: #302e29;
+  box-shadow: 0 1px 4px rgba(48, 44, 36, 0.1);
+}
+
+.platform-switch input:focus-visible + span {
+  outline: 2px solid rgba(91, 77, 68, 0.5);
+  outline-offset: -2px;
+}
+
+.platform-switch input:disabled + span {
+  cursor: wait;
+  opacity: 0.52;
+}
+
 .playlist-field {
   display: block;
 }

@@ -21,7 +21,7 @@
         class="cover-import"
         id="openPlaylistImport"
         type="button"
-        title="从网易云歌单导入专辑封面"
+        title="从网易云或 QQ 音乐歌单导入专辑封面"
         aria-haspopup="dialog"
       >
         <span>导入歌单</span>
@@ -60,7 +60,7 @@
         </button>
 
         <div class="dialog-heading">
-          <span class="dialog-kicker">NETEASE PLAYLIST</span>
+          <span class="dialog-kicker" id="playlistDialogKicker">NETEASE PLAYLIST</span>
           <h2 id="playlistDialogTitle">把歌单放上墙</h2>
           <p>
             当前 <strong id="currentLayoutLabel">4×2</strong> 布局将随机抽取
@@ -69,6 +69,18 @@
         </div>
 
         <form id="playlistImportForm">
+          <fieldset class="platform-switch">
+            <legend>音乐平台</legend>
+            <label>
+              <input type="radio" name="playlistPlatform" value="netease" checked />
+              <span>网易云音乐</span>
+            </label>
+            <label>
+              <input type="radio" name="playlistPlatform" value="qq" />
+              <span>QQ 音乐</span>
+            </label>
+          </fieldset>
+
           <label class="playlist-field" for="playlistUrl">
             <span>歌单链接</span>
             <span class="playlist-input-wrap">
@@ -85,7 +97,7 @@
             </span>
           </label>
 
-          <p class="playlist-hint">支持网易云标准歌单链接、分享短链，也可以直接输入歌单 ID。</p>
+          <p class="playlist-hint" id="playlistHint">支持网易云标准歌单链接、分享短链，也可以直接输入歌单 ID。</p>
           <p class="playlist-status" id="playlistImportStatus" role="status" aria-live="polite"></p>
 
           <div class="dialog-actions">
