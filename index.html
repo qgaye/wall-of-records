@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="用纯 HTML、CSS 和 JavaScript 制作的亚克力唱片墙展示效果。"
+    />
+    <title>Record Wall · 亚克力专辑墙</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="room-architecture" aria-hidden="true">
+      <span class="wall-seam wall-seam--one"></span>
+      <span class="wall-seam wall-seam--two"></span>
+      <span class="wall-seam wall-seam--three"></span>
+    </div>
+
+    <div class="layout-controls" role="group" aria-label="专辑排列方式">
+      <button class="layout-option" type="button" data-layout="4x2" aria-pressed="true">4×2</button>
+      <button class="layout-option" type="button" data-layout="3x3" aria-pressed="false">3×3</button>
+      <button class="layout-option" type="button" data-layout="3x2" aria-pressed="false">3×2</button>
+      <button
+        class="cover-import"
+        id="openPlaylistImport"
+        type="button"
+        title="从网易云歌单导入专辑封面"
+        aria-haspopup="dialog"
+      >
+        <span>导入歌单</span>
+      </button>
+    </div>
+
+    <main class="wall">
+      <div class="gallery-stage" id="galleryStage">
+        <section class="record-grid" id="recordGrid" aria-label="唱片收藏"></section>
+      </div>
+    </main>
+
+    <dialog class="playlist-dialog" id="playlistDialog" aria-labelledby="playlistDialogTitle">
+      <div class="playlist-dialog__surface">
+        <button class="dialog-close" id="closePlaylistDialog" type="button" aria-label="关闭导入弹窗">
+          <span aria-hidden="true"></span>
+        </button>
+
+        <div class="dialog-heading">
+          <span class="dialog-kicker">NETEASE PLAYLIST</span>
+          <h2 id="playlistDialogTitle">把歌单放上墙</h2>
+          <p>
+            当前 <strong id="currentLayoutLabel">4×2</strong> 布局将随机抽取
+            <strong id="requiredCoverCount">8</strong> 首歌曲的专辑封面。
+          </p>
+        </div>
+
+        <form id="playlistImportForm">
+          <label class="playlist-field" for="playlistUrl">
+            <span>歌单链接</span>
+            <span class="playlist-input-wrap">
+              <span class="playlist-input-prefix" aria-hidden="true">URL</span>
+              <input
+                id="playlistUrl"
+                name="playlistUrl"
+                type="text"
+                inputmode="url"
+                autocomplete="url"
+                placeholder="https://music.163.com/playlist?id=..."
+                required
+              />
+            </span>
+          </label>
+
+          <p class="playlist-hint">支持网易云标准歌单链接、分享短链，也可以直接输入歌单 ID。</p>
+          <p class="playlist-status" id="playlistImportStatus" role="status" aria-live="polite"></p>
+
+          <div class="dialog-actions">
+            <button class="dialog-button dialog-button--quiet" id="cancelPlaylistImport" type="button">取消</button>
+            <button class="dialog-button dialog-button--primary" id="parsePlaylistButton" type="submit">
+              <span>随机解析并上墙</span>
+              <i aria-hidden="true"></i>
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <template id="recordTemplate">
+      <article class="record-item">
+        <div class="acrylic-frame" role="img">
+          <span class="plate-depth" aria-hidden="true"></span>
+          <span class="album-slot"></span>
+          <span class="plate-face" aria-hidden="true"></span>
+          <span class="plate-reflection" aria-hidden="true"></span>
+
+          <span class="screw screw--tl" aria-hidden="true"></span>
+          <span class="screw screw--tr" aria-hidden="true"></span>
+          <span class="screw screw--bl" aria-hidden="true"></span>
+          <span class="screw screw--br" aria-hidden="true"></span>
+        </div>
+      </article>
+    </template>
+
+    <script src="./script.js"></script>
+  </body>
+</html>

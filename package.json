@@ -1,0 +1,12 @@
+{
+  "name": "wall-of-records",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A responsive acrylic record wall with NetEase playlist importing.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
