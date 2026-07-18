@@ -8,6 +8,8 @@ const PORT = Number(process.env.RECORD_WALL_PORT) || 8000;
 const ROOT = __dirname;
 const MAX_BODY_SIZE = 16 * 1024;
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+const IMPORT_LOG_FILE =
+  process.env.RECORD_WALL_IMPORT_LOG || path.join(ROOT, "logs", "playlist-imports.jsonl");
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -23,6 +25,25 @@ function writeJson(response, status, body) {
     "Cache-Control": "no-store",
   });
   response.end(JSON.stringify(body));
+}
+
+async function appendImportLog({ platform, playlist, result }) {
+  const entry = {
+    time: new Date().toISOString(),
+    playlist: {
+      id: playlist?.id ? String(playlist.id) : null,
+      name: playlist?.name || null,
+    },
+    platform,
+    result,
+  };
+
+  try {
+    await fs.mkdir(path.dirname(IMPORT_LOG_FILE), { recursive: true });
+    await fs.appendFile(IMPORT_LOG_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (error) {
+    console.error(`无法写入歌单解析日志：${error.message}`);
+  }
 }
 
 function isAllowedCoverHost(hostname) {
@@ -349,15 +370,20 @@ async function handleNeteasePlaylistApi(request, response) {
     return;
   }
 
+  let playlistReference = { id: null, name: null };
+
   try {
     const body = await readJsonBody(request);
+    playlistReference.id = directPlaylistId(body.url);
     const requestedLimit = Number(body.limit);
     const limit = Number.isInteger(requestedLimit)
       ? Math.min(Math.max(requestedLimit, 1), 24)
       : 8;
     const playlistId = await resolveSharedPlaylistId(body.url);
+    playlistReference.id = playlistId;
 
     const playlist = normalizeTracks(await fetchPlaylistPayload(playlistId));
+    playlistReference = { id: playlist.id || playlistId, name: playlist.name };
     if (!playlist.tracks.length) {
       throw new Error(
         playlist.trackCount === 0
@@ -370,6 +396,16 @@ async function handleNeteasePlaylistApi(request, response) {
     }
 
     const selected = randomTracks(playlist.tracks, limit);
+    await appendImportLog({
+      platform: "netease",
+      playlist: playlistReference,
+      result: {
+        status: "success",
+        requested: limit,
+        available: playlist.tracks.length,
+        returned: selected.length,
+      },
+    });
     writeJson(response, 200, {
       playlist: { id: playlist.id, name: playlist.name },
       requested: limit,
@@ -378,6 +414,11 @@ async function handleNeteasePlaylistApi(request, response) {
     });
   } catch (error) {
     const message = error?.name === "TimeoutError" ? "连接网易云超时，请稍后重试" : error.message;
+    await appendImportLog({
+      platform: "netease",
+      playlist: playlistReference,
+      result: { status: "error", message: message || "歌单解析失败" },
+    });
     writeJson(response, 400, { error: message || "歌单解析失败" });
   }
 }
@@ -388,14 +429,19 @@ async function handleQQPlaylistApi(request, response) {
     return;
   }
 
+  let playlistReference = { id: null, name: null };
+
   try {
     const body = await readJsonBody(request);
+    playlistReference.id = directPlaylistId(body.url);
     const requestedLimit = Number(body.limit);
     const limit = Number.isInteger(requestedLimit)
       ? Math.min(Math.max(requestedLimit, 1), 24)
       : 8;
     const { playlistId, encodedHostUin } = resolveQQPlaylist(body.url);
+    playlistReference.id = playlistId;
     const playlist = normalizeQQTracks(await fetchQQPlaylist(playlistId, encodedHostUin));
+    playlistReference = { id: playlist.id || playlistId, name: playlist.name };
 
     if (!playlist.tracks.length) {
       throw new Error(
@@ -409,6 +455,16 @@ async function handleQQPlaylistApi(request, response) {
     }
 
     const selected = randomTracks(playlist.tracks, limit);
+    await appendImportLog({
+      platform: "qq",
+      playlist: playlistReference,
+      result: {
+        status: "success",
+        requested: limit,
+        available: playlist.tracks.length,
+        returned: selected.length,
+      },
+    });
     writeJson(response, 200, {
       playlist: { id: playlist.id || playlistId, name: playlist.name },
       requested: limit,
@@ -416,7 +472,13 @@ async function handleQQPlaylistApi(request, response) {
       tracks: selected,
     });
   } catch (error) {
-    writeJson(response, 400, { error: error.message || "QQ 音乐歌单解析失败" });
+    const message = error.message || "QQ 音乐歌单解析失败";
+    await appendImportLog({
+      platform: "qq",
+      playlist: playlistReference,
+      result: { status: "error", message },
+    });
+    writeJson(response, 400, { error: message });
   }
 }
 
@@ -472,6 +534,11 @@ async function handleCoverProxy(request, response) {
 async function serveStatic(request, response) {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(requestUrl.pathname);
+  if (pathname === "/logs" || pathname.startsWith("/logs/")) {
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+    return;
+  }
   const relativePath = pathname === "/" || pathname === "/share" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT, relativePath);
 
