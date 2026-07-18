@@ -118,12 +118,19 @@ const parsePlaylistButton = document.querySelector("#parsePlaylistButton");
 const requiredCoverCount = document.querySelector("#requiredCoverCount");
 const currentLayoutLabel = document.querySelector("#currentLayoutLabel");
 const shareButton = document.querySelector("#copyShareLink");
+const shareImageButton = document.querySelector("#openShareImage");
+const shareImageDialog = document.querySelector("#shareImageDialog");
+const shareImageStage = document.querySelector("#shareImageStage");
+const shareImagePreview = document.querySelector("#shareImagePreview");
+const shareImageStatus = document.querySelector("#shareImageStatus");
 
 let fitFrame;
 let importedCovers = [];
 let importRequest;
 let importedPlaylistName = "网易云歌单";
 let shareFeedbackTimer;
+let shareImageObjectUrl;
+let shareImageGeneration = 0;
 
 function getSceneSize(layout) {
   return {
@@ -330,7 +337,9 @@ function buildShareUrl() {
 }
 
 function enableSharing() {
-  shareButton.hidden = importedCovers.length === 0;
+  const isHidden = importedCovers.length === 0;
+  shareButton.hidden = isHidden;
+  shareImageButton.hidden = isHidden;
 }
 
 function fallbackCopyText(value) {
@@ -377,6 +386,245 @@ async function copyShareLink() {
     shareButton.querySelector("span").textContent = "复制失败";
     shareButton.title = "无法访问剪贴板，请检查浏览器权限";
   }
+}
+
+function loadCanvasCover(cover) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("有一张专辑封面读取失败"));
+    image.src = `/api/cover?url=${encodeURIComponent(cover)}`;
+  });
+}
+
+function roundedRectPath(context, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, safeRadius);
+  context.arcTo(x + width, y + height, x, y + height, safeRadius);
+  context.arcTo(x, y + height, x, y, safeRadius);
+  context.arcTo(x, y, x + width, y, safeRadius);
+  context.closePath();
+}
+
+function drawShareWallBackground(context, width, height) {
+  const wallTone = context.createLinearGradient(0, 0, width, height);
+  wallTone.addColorStop(0, "#e2ded3");
+  wallTone.addColorStop(0.52, "#d9d4c8");
+  wallTone.addColorStop(1, "#cdc7ba");
+  context.fillStyle = wallTone;
+  context.fillRect(0, 0, width, height);
+
+  const ceilingLight = context.createRadialGradient(width * 0.5, -height * 0.06, 0, width * 0.5, 0, width * 0.64);
+  ceilingLight.addColorStop(0, "rgba(255, 247, 222, .78)");
+  ceilingLight.addColorStop(0.46, "rgba(255, 238, 198, .25)");
+  ceilingLight.addColorStop(1, "rgba(255, 238, 198, 0)");
+  context.fillStyle = ceilingLight;
+  context.fillRect(0, 0, width, height);
+
+  let seed = 1487;
+  context.fillStyle = "rgba(60, 55, 47, .022)";
+  for (let index = 0; index < 3200; index += 1) {
+    seed = (seed * 16807) % 2147483647;
+    const x = (seed / 2147483647) * width;
+    seed = (seed * 16807) % 2147483647;
+    const y = (seed / 2147483647) * height;
+    context.fillRect(x, y, 1, 1);
+  }
+}
+
+function drawShareScrew(context, x, y, radius) {
+  const metal = context.createRadialGradient(x - radius * 0.34, y - radius * 0.36, radius * 0.08, x, y, radius);
+  metal.addColorStop(0, "#ffffff");
+  metal.addColorStop(0.22, "#d9d7d1");
+  metal.addColorStop(0.62, "#86857f");
+  metal.addColorStop(0.82, "#bbb8af");
+  metal.addColorStop(1, "#5e5d58");
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fillStyle = metal;
+  context.shadowColor = "rgba(28, 27, 23, .42)";
+  context.shadowBlur = radius * 0.65;
+  context.shadowOffsetX = radius * 0.24;
+  context.shadowOffsetY = radius * 0.36;
+  context.fill();
+  context.shadowColor = "transparent";
+  context.lineWidth = Math.max(1, radius * 0.12);
+  context.strokeStyle = "rgba(54, 53, 49, .5)";
+  context.stroke();
+}
+
+function drawSharePanel(context, image, x, y, size, variation) {
+  context.save();
+  context.translate(x + size / 2, y + size / 2);
+  context.rotate((variation.rotate * Math.PI) / 180);
+  context.translate(-size / 2, -size / 2);
+
+  roundedRectPath(context, 0, 0, size, size, size * 0.012);
+  context.fillStyle = "rgba(255, 255, 255, .07)";
+  context.shadowColor = "rgba(45, 40, 32, .24)";
+  context.shadowBlur = size * 0.075;
+  context.shadowOffsetX = size * 0.025;
+  context.shadowOffsetY = size * 0.062;
+  context.fill();
+  context.shadowColor = "transparent";
+
+  const inset = size * 0.13;
+  const coverSize = size - inset * 2;
+  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+  const sourceX = (image.naturalWidth - sourceSize) / 2;
+  const sourceY = (image.naturalHeight - sourceSize) / 2;
+  context.shadowColor = "rgba(27, 25, 21, .2)";
+  context.shadowBlur = size * 0.036;
+  context.shadowOffsetY = size * 0.018;
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, inset, inset, coverSize, coverSize);
+  context.shadowColor = "transparent";
+
+  context.fillStyle = "rgba(255, 239, 203, .055)";
+  context.fillRect(inset, inset, coverSize, coverSize);
+
+  roundedRectPath(context, 0, 0, size, size, size * 0.012);
+  context.fillStyle = "rgba(255, 255, 255, .018)";
+  context.fill();
+  context.lineWidth = Math.max(1.2, size * 0.006);
+  context.strokeStyle = "rgba(238, 248, 246, .58)";
+  context.stroke();
+
+  roundedRectPath(context, size * 0.012, size * 0.012, size * 0.976, size * 0.976, size * 0.008);
+  context.lineWidth = Math.max(0.8, size * 0.003);
+  context.strokeStyle = "rgba(83, 101, 105, .16)";
+  context.stroke();
+
+  context.save();
+  roundedRectPath(context, 0, 0, size, size, size * 0.012);
+  context.clip();
+  const reflection = context.createLinearGradient(size * 0.06, size * 0.8, size * 0.92, size * 0.08);
+  reflection.addColorStop(0, "rgba(255, 255, 255, 0)");
+  reflection.addColorStop(0.43, "rgba(255, 255, 255, 0)");
+  reflection.addColorStop(0.49, "rgba(255, 255, 255, .18)");
+  reflection.addColorStop(0.54, "rgba(255, 255, 255, .035)");
+  reflection.addColorStop(0.61, "rgba(255, 255, 255, 0)");
+  context.fillStyle = reflection;
+  context.fillRect(0, 0, size, size);
+  context.restore();
+
+  const screwInset = size * 0.067;
+  const screwRadius = Math.max(4.8, size * 0.021);
+  drawShareScrew(context, screwInset, screwInset, screwRadius);
+  drawShareScrew(context, size - screwInset, screwInset, screwRadius);
+  drawShareScrew(context, screwInset, size - screwInset, screwRadius);
+  drawShareScrew(context, size - screwInset, size - screwInset, screwRadius);
+  context.restore();
+}
+
+function drawShareImage(images, layout) {
+  const width = 1600;
+  const height = 1000;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { alpha: false });
+  drawShareWallBackground(context, width, height);
+
+  const gap = 38;
+  const availableWidth = width - 300;
+  const availableHeight = height - 230;
+  const panelSize = Math.min(
+    (availableWidth - gap * (layout.columns - 1)) / layout.columns,
+    (availableHeight - gap * (layout.rows - 1)) / layout.rows,
+  );
+  const gridWidth = panelSize * layout.columns + gap * (layout.columns - 1);
+  const gridHeight = panelSize * layout.rows + gap * (layout.rows - 1);
+  const originX = (width - gridWidth) / 2;
+  const originY = (height - gridHeight) / 2;
+
+  images.forEach((image, index) => {
+    const column = index % layout.columns;
+    const row = Math.floor(index / layout.columns);
+    if (row >= layout.rows) return;
+    const variation = mountVariations[index] || mountVariations[0];
+    drawSharePanel(
+      context,
+      image,
+      originX + column * (panelSize + gap) + variation.x,
+      originY + row * (panelSize + gap) + variation.y,
+      panelSize,
+      variation,
+    );
+  });
+
+  const vignette = context.createRadialGradient(width / 2, height / 2, height * 0.34, width / 2, height / 2, width * 0.68);
+  vignette.addColorStop(0, "rgba(42, 38, 31, 0)");
+  vignette.addColorStop(1, "rgba(42, 38, 31, .09)");
+  context.fillStyle = vignette;
+  context.fillRect(0, 0, width, height);
+
+  context.save();
+  context.font = '500 17px "Avenir Next", Avenir, sans-serif';
+  context.textAlign = "right";
+  context.textBaseline = "alphabetic";
+  context.fillStyle = "rgba(56, 52, 45, .24)";
+  context.fillText("presented by spin.qgaye.me", width - 48, height - 38);
+  context.restore();
+  return canvas;
+}
+
+function canvasToBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("图片导出失败"));
+    }, "image/png");
+  });
+}
+
+async function generateShareImage() {
+  const generation = ++shareImageGeneration;
+  const layout = layoutSettings[grid.dataset.layout || "4x2"];
+  const tracks = importedCovers.slice(0, layout.visible);
+
+  shareImageStage.dataset.state = "loading";
+  shareImageStage.setAttribute("aria-busy", "true");
+  shareImagePreview.hidden = true;
+  shareImageStatus.dataset.state = "";
+  shareImageStatus.textContent = `正在处理 ${tracks.length} 张专辑封面…`;
+
+  try {
+    if (!tracks.length) throw new Error("请先导入歌单，再生成分享图片");
+    const images = await Promise.all(tracks.map((track) => loadCanvasCover(track.cover)));
+    if (generation !== shareImageGeneration) return;
+
+    const canvas = drawShareImage(images, layout);
+    const blob = await canvasToBlob(canvas);
+    if (generation !== shareImageGeneration) return;
+
+    if (shareImageObjectUrl) URL.revokeObjectURL(shareImageObjectUrl);
+    shareImageObjectUrl = URL.createObjectURL(blob);
+    shareImagePreview.src = shareImageObjectUrl;
+    shareImagePreview.hidden = false;
+    shareImageStage.dataset.state = "ready";
+    shareImageStage.setAttribute("aria-busy", "false");
+    shareImageStatus.textContent = "1600 × 1000 PNG · 长按或右键上方图片即可保存";
+  } catch (error) {
+    if (generation !== shareImageGeneration) return;
+    shareImageStage.dataset.state = "error";
+    shareImageStage.setAttribute("aria-busy", "false");
+    shareImageStatus.dataset.state = "error";
+    shareImageStatus.textContent = error.message || "分享图片生成失败，请稍后重试";
+  }
+}
+
+function openShareImageDialog() {
+  shareImageDialog.showModal();
+  generateShareImage();
+}
+
+function closeShareImageDialog() {
+  shareImageGeneration += 1;
+  shareImageDialog.close();
+  shareImageButton.focus();
 }
 
 function updateDialogLayoutSummary(layout = layoutSettings[grid.dataset.layout || "4x2"]) {
@@ -473,18 +721,29 @@ document.querySelectorAll(".layout-option").forEach((button) => {
 
 importButton.addEventListener("click", openImportDialog);
 shareButton.addEventListener("click", copyShareLink);
+shareImageButton.addEventListener("click", openShareImageDialog);
 document.querySelector("#closePlaylistDialog").addEventListener("click", closeImportDialog);
 document.querySelector("#cancelPlaylistImport").addEventListener("click", closeImportDialog);
+document.querySelector("#closeShareImageDialog").addEventListener("click", closeShareImageDialog);
 playlistForm.addEventListener("submit", importPlaylist);
 playlistDialog.addEventListener("cancel", stopImportRequest);
 playlistDialog.addEventListener("click", (event) => {
   if (event.target === playlistDialog) closeImportDialog();
+});
+shareImageDialog.addEventListener("cancel", () => {
+  shareImageGeneration += 1;
+});
+shareImageDialog.addEventListener("click", (event) => {
+  if (event.target === shareImageDialog) closeShareImageDialog();
 });
 
 grid.addEventListener("pointermove", updateReflectionFromPointer);
 grid.addEventListener("pointerleave", resetReflection);
 window.addEventListener("resize", scheduleSceneFit, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleSceneFit, { passive: true });
+window.addEventListener("beforeunload", () => {
+  if (shareImageObjectUrl) URL.revokeObjectURL(shareImageObjectUrl);
+});
 
 const sharedState = readShareState();
 if (sharedState) {

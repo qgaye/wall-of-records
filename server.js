@@ -7,6 +7,7 @@ const HOST = process.env.RECORD_WALL_HOST || "127.0.0.1";
 const PORT = Number(process.env.RECORD_WALL_PORT) || 8000;
 const ROOT = __dirname;
 const MAX_BODY_SIZE = 16 * 1024;
+const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -22,6 +23,10 @@ function writeJson(response, status, body) {
     "Cache-Control": "no-store",
   });
   response.end(JSON.stringify(body));
+}
+
+function isAllowedCoverHost(hostname) {
+  return /(^|\.)music\.126\.net$/i.test(hostname);
 }
 
 function directPlaylistId(value) {
@@ -269,6 +274,53 @@ async function handlePlaylistApi(request, response) {
   }
 }
 
+async function handleCoverProxy(request, response) {
+  if (request.method !== "GET") {
+    writeJson(response, 405, { error: "请使用 GET 请求" });
+    return;
+  }
+
+  try {
+    const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    const source = new URL(requestUrl.searchParams.get("url") || "");
+    if (source.protocol !== "https:" || !isAllowedCoverHost(source.hostname) || source.port) {
+      throw new Error("只允许读取网易云专辑封面");
+    }
+
+    const imageResponse = await fetch(source, {
+      redirect: "error",
+      headers: {
+        Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
+        Referer: "https://music.163.com/",
+        "User-Agent": "Mozilla/5.0 RecordWall/1.0",
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!imageResponse.ok) throw new Error(`封面服务返回了 ${imageResponse.status} 状态`);
+
+    const contentType = imageResponse.headers.get("content-type") || "";
+    if (!/^image\/(jpeg|jpg|png|webp|avif)$/i.test(contentType.split(";")[0])) {
+      throw new Error("封面服务返回了非图片内容");
+    }
+
+    const declaredSize = Number(imageResponse.headers.get("content-length")) || 0;
+    if (declaredSize > MAX_IMAGE_SIZE) throw new Error("封面图片过大");
+
+    const image = Buffer.from(await imageResponse.arrayBuffer());
+    if (image.length > MAX_IMAGE_SIZE) throw new Error("封面图片过大");
+
+    response.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": image.length,
+      "Cache-Control": "public, max-age=86400",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(image);
+  } catch (error) {
+    writeJson(response, 400, { error: error.message || "封面读取失败" });
+  }
+}
+
 async function serveStatic(request, response) {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(requestUrl.pathname);
@@ -302,6 +354,11 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (pathname === "/api/cover") {
+    await handleCoverProxy(request, response);
+    return;
+  }
+
   if (pathname === "/share/") {
     response.writeHead(308, { Location: "/share" });
     response.end();
@@ -325,6 +382,8 @@ if (require.main === module) {
 module.exports = {
   directPlaylistId,
   fetchPlaylistPayload,
+  handleCoverProxy,
+  isAllowedCoverHost,
   normalizeTracks,
   randomTracks,
   resolveSharedPlaylistId,

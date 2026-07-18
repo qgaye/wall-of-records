@@ -11,11 +11,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="room-architecture" aria-hidden="true">
-      <span class="wall-seam wall-seam--one"></span>
-      <span class="wall-seam wall-seam--two"></span>
-      <span class="wall-seam wall-seam--three"></span>
-    </div>
+    <div class="room-architecture" aria-hidden="true"></div>
 
     <div class="layout-controls" role="group" aria-label="专辑排列方式">
       <button class="layout-option" type="button" data-layout="4x2" aria-pressed="true" hidden>4×2</button>
@@ -38,6 +34,16 @@
         hidden
       >
         <span>复制分享</span>
+      </button>
+      <button
+        class="share-control"
+        id="openShareImage"
+        type="button"
+        title="生成可保存的唱片墙图片"
+        aria-haspopup="dialog"
+        hidden
+      >
+        <span>分享图片</span>
       </button>
     </div>
 
@@ -90,6 +96,30 @@
             </button>
           </div>
         </form>
+      </div>
+    </dialog>
+
+    <dialog class="share-image-dialog" id="shareImageDialog" aria-labelledby="shareImageDialogTitle">
+      <div class="share-image-dialog__surface">
+        <button class="dialog-close" id="closeShareImageDialog" type="button" aria-label="关闭分享图片弹窗">
+          <span aria-hidden="true"></span>
+        </button>
+
+        <div class="share-image-heading">
+          <span class="dialog-kicker">SHARE AS IMAGE</span>
+          <h2 id="shareImageDialogTitle">保存这面唱片墙</h2>
+          <p>手机端长按图片保存，电脑端右键图片保存。</p>
+        </div>
+
+        <div class="share-image-stage" id="shareImageStage" aria-busy="true">
+          <div class="share-image-loader" aria-hidden="true">
+            <i></i>
+            <span>正在冲印墙面照片</span>
+          </div>
+          <img id="shareImagePreview" alt="生成的唱片收藏墙分享图片" hidden />
+        </div>
+
+        <p class="share-image-status" id="shareImageStatus" role="status" aria-live="polite"></p>
       </div>
     </dialog>
 
