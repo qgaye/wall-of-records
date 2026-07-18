@@ -164,7 +164,8 @@ button,
 }
 
 .layout-option,
-.cover-import span {
+.cover-import span,
+.share-control span {
   display: inline-grid;
   height: 24px;
   place-items: center;
@@ -182,8 +183,13 @@ button,
   padding: 0 7px;
 }
 
+.layout-option[hidden] {
+  display: none;
+}
+
 .layout-option + .layout-option,
-.cover-import {
+.cover-import,
+.share-control {
   border-left: 1px solid rgba(59, 55, 47, 0.1);
 }
 
@@ -194,12 +200,14 @@ button,
 }
 
 .layout-option:focus-visible,
-.cover-import:focus-within {
+.cover-import:focus-within,
+.share-control:focus-visible {
   outline: 1px solid rgba(35, 34, 30, 0.72);
   outline-offset: 2px;
 }
 
-.cover-import {
+.cover-import,
+.share-control {
   position: relative;
   display: inline-flex;
   padding: 0;
@@ -209,9 +217,19 @@ button,
   background: transparent;
 }
 
-.cover-import span {
+.cover-import span,
+.share-control span {
   min-width: 63px;
   padding: 0 9px;
+}
+
+.share-control[hidden] {
+  display: none;
+}
+
+.share-control[data-state="copied"] span {
+  background: rgba(42, 39, 34, 0.88);
+  color: #f0ece2;
 }
 
 .playlist-dialog {

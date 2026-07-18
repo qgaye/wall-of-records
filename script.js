@@ -117,10 +117,13 @@ const importButton = document.querySelector("#openPlaylistImport");
 const parsePlaylistButton = document.querySelector("#parsePlaylistButton");
 const requiredCoverCount = document.querySelector("#requiredCoverCount");
 const currentLayoutLabel = document.querySelector("#currentLayoutLabel");
+const shareButton = document.querySelector("#copyShareLink");
 
 let fitFrame;
 let importedCovers = [];
 let importRequest;
+let importedPlaylistName = "网易云歌单";
+let shareFeedbackTimer;
 
 function getSceneSize(layout) {
   return {
@@ -255,6 +258,127 @@ function resetReflection() {
   grid.style.setProperty("--reflection-shift-y", "0px");
 }
 
+function encodeBase64Url(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function isAllowedSharedCover(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /(^|\.)music\.126\.net$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function compactShareState() {
+  return {
+    v: 1,
+    l: grid.dataset.layout || "4x2",
+    p: importedPlaylistName,
+    t: importedCovers.slice(0, records.length).map((track) => ({
+      n: track.name,
+      a: track.artist,
+      b: track.album,
+      c: track.cover,
+    })),
+  };
+}
+
+function readShareState() {
+  const encoded = new URLSearchParams(window.location.hash.slice(1)).get("share");
+  if (!encoded || encoded.length > 24_000) return null;
+
+  try {
+    const state = decodeBase64Url(encoded);
+    if (state?.v !== 1 || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
+
+    const tracks = state.t.slice(0, records.length).map((track) => ({
+      name: String(track?.n || "未命名歌曲").slice(0, 160),
+      artist: String(track?.a || "未知艺人").slice(0, 160),
+      album: String(track?.b || "未知专辑").slice(0, 160),
+      cover: String(track?.c || ""),
+    }));
+
+    if (!tracks.length || tracks.some((track) => !isAllowedSharedCover(track.cover))) return null;
+    return {
+      layout: state.l,
+      playlistName: String(state.p || "分享歌单").slice(0, 160),
+      tracks,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildShareUrl() {
+  const url = new URL("/share", window.location.origin);
+  url.hash = `share=${encodeBase64Url(compactShareState())}`;
+  return url.href;
+}
+
+function enableSharing() {
+  shareButton.hidden = importedCovers.length === 0;
+}
+
+function fallbackCopyText(value) {
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("浏览器没有允许复制");
+}
+
+async function copyShareLink() {
+  const shareUrl = buildShareUrl();
+
+  try {
+    let copied = false;
+    try {
+      fallbackCopyText(shareUrl);
+      copied = true;
+    } catch {
+      // 部分浏览器已移除 execCommand，再尝试现代剪贴板接口。
+    }
+
+    if (!copied && navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(shareUrl);
+      copied = true;
+    }
+    if (!copied) throw new Error("浏览器没有允许复制");
+
+    window.clearTimeout(shareFeedbackTimer);
+    shareButton.dataset.state = "copied";
+    shareButton.querySelector("span").textContent = "已复制";
+    shareButton.title = shareUrl;
+    shareFeedbackTimer = window.setTimeout(() => {
+      shareButton.dataset.state = "";
+      shareButton.querySelector("span").textContent = "复制分享";
+      shareButton.title = "复制可复原当前墙面的分享链接";
+    }, 1800);
+  } catch {
+    shareButton.querySelector("span").textContent = "复制失败";
+    shareButton.title = "无法访问剪贴板，请检查浏览器权限";
+  }
+}
+
 function updateDialogLayoutSummary(layout = layoutSettings[grid.dataset.layout || "4x2"]) {
   requiredCoverCount.textContent = layout.visible;
   currentLayoutLabel.textContent = layout.label;
@@ -323,8 +447,10 @@ async function importPlaylist(event) {
     if (!result.tracks?.length) throw new Error("这个歌单里没有可用的专辑封面");
 
     importedCovers = result.tracks;
+    importedPlaylistName = result.playlist.name;
     renderRecords();
     applyLayout(grid.dataset.layout || "4x2");
+    enableSharing();
 
     const loadedCount = result.tracks.length;
     importButton.querySelector("span").textContent = "重新导入";
@@ -346,6 +472,7 @@ document.querySelectorAll(".layout-option").forEach((button) => {
 });
 
 importButton.addEventListener("click", openImportDialog);
+shareButton.addEventListener("click", copyShareLink);
 document.querySelector("#closePlaylistDialog").addEventListener("click", closeImportDialog);
 document.querySelector("#cancelPlaylistImport").addEventListener("click", closeImportDialog);
 playlistForm.addEventListener("submit", importPlaylist);
@@ -359,6 +486,15 @@ grid.addEventListener("pointerleave", resetReflection);
 window.addEventListener("resize", scheduleSceneFit, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleSceneFit, { passive: true });
 
+const sharedState = readShareState();
+if (sharedState) {
+  importedCovers = sharedState.tracks;
+  importedPlaylistName = sharedState.playlistName;
+  importButton.querySelector("span").textContent = "重新导入";
+  importButton.title = `当前墙面来自分享链接：《${importedPlaylistName}》`;
+}
+
 renderRecords();
-applyLayout("4x2");
+applyLayout(sharedState?.layout || "4x2");
+enableSharing();
 document.fonts?.ready.then(scheduleSceneFit);

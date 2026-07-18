@@ -18,9 +18,9 @@
     </div>
 
     <div class="layout-controls" role="group" aria-label="专辑排列方式">
-      <button class="layout-option" type="button" data-layout="4x2" aria-pressed="true">4×2</button>
-      <button class="layout-option" type="button" data-layout="3x3" aria-pressed="false">3×3</button>
-      <button class="layout-option" type="button" data-layout="3x2" aria-pressed="false">3×2</button>
+      <button class="layout-option" type="button" data-layout="4x2" aria-pressed="true" hidden>4×2</button>
+      <button class="layout-option" type="button" data-layout="3x3" aria-pressed="false" hidden>3×3</button>
+      <button class="layout-option" type="button" data-layout="3x2" aria-pressed="false" hidden>3×2</button>
       <button
         class="cover-import"
         id="openPlaylistImport"
@@ -29,6 +29,15 @@
         aria-haspopup="dialog"
       >
         <span>导入歌单</span>
+      </button>
+      <button
+        class="share-control"
+        id="copyShareLink"
+        type="button"
+        title="复制可复原当前墙面的分享链接"
+        hidden
+      >
+        <span>复制分享</span>
       </button>
     </div>
 

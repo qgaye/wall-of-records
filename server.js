@@ -272,7 +272,7 @@ async function handlePlaylistApi(request, response) {
 async function serveStatic(request, response) {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(requestUrl.pathname);
-  const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const relativePath = pathname === "/" || pathname === "/share" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT, relativePath);
 
   if (filePath !== ROOT && !filePath.startsWith(`${ROOT}${path.sep}`)) {
@@ -299,6 +299,12 @@ const server = http.createServer(async (request, response) => {
   const pathname = new URL(request.url, `http://${request.headers.host || "localhost"}`).pathname;
   if (pathname === "/api/netease-playlist") {
     await handlePlaylistApi(request, response);
+    return;
+  }
+
+  if (pathname === "/share/") {
+    response.writeHead(308, { Location: "/share" });
+    response.end();
     return;
   }
 
