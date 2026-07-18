@@ -187,7 +187,16 @@ function normalizeTracks(payload) {
   const playlist = payload.result || payload.playlist;
   const rawTracks = playlist?.tracks || [];
 
-  const tracks = rawTracks
+  return {
+    id: String(playlist?.id || ""),
+    name: playlist?.name || "网易云歌单",
+    trackCount: Number(playlist?.trackCount) || rawTracks.length,
+    tracks: normalizeNeteaseTrackList(rawTracks),
+  };
+}
+
+function normalizeNeteaseTrackList(rawTracks) {
+  return rawTracks
     .map((track) => {
       const album = track.album || track.al || {};
       const artists = track.artists || track.ar || [];
@@ -203,16 +212,9 @@ function normalizeTracks(payload) {
       };
     })
     .filter(Boolean);
-
-  return {
-    id: String(playlist?.id || ""),
-    name: playlist?.name || "网易云歌单",
-    trackCount: Number(playlist?.trackCount) || tracks.length,
-    tracks,
-  };
 }
 
-function randomTracks(tracks, limit) {
+function uniqueTracksByCover(tracks) {
   const unique = [];
   const seenCovers = new Set();
 
@@ -223,12 +225,33 @@ function randomTracks(tracks, limit) {
     unique.push(track);
   });
 
-  const pool = unique.length >= limit ? unique : tracks.slice();
+  return unique;
+}
+
+function randomTracks(tracks, limit) {
+  return randomSample(uniqueTracksByCover(tracks), limit);
+}
+
+function randomSample(items, limit) {
+  const pool = items.slice();
   for (let index = pool.length - 1; index > 0; index -= 1) {
     const swapIndex = randomInt(index + 1);
     [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
   }
   return pool.slice(0, limit);
+}
+
+function neteaseTrackIds(payload) {
+  const playlist = payload.result || payload.playlist;
+  const rawTrackIds = playlist?.trackIds?.length ? playlist.trackIds : playlist?.tracks || [];
+
+  return [
+    ...new Set(
+      rawTrackIds
+        .map((track) => Number(track?.id ?? track))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
 }
 
 async function fetchPlaylistPayload(playlistId) {
@@ -275,6 +298,51 @@ async function fetchPlaylistPayload(playlistId) {
     throw new Error("连接网易云超时，请稍后重试");
   }
   throw lastError || new Error("网易云歌单接口暂时不可用");
+}
+
+async function fetchNeteaseSongDetails(trackIds) {
+  if (!trackIds.length) return [];
+
+  const serializedIds = JSON.stringify(trackIds);
+  const endpoints = [
+    `https://music.163.com/api/song/detail/?ids=${encodeURIComponent(serializedIds)}`,
+    `https://music.163.com/api/v3/song/detail?c=${encodeURIComponent(
+      JSON.stringify(trackIds.map((id) => ({ id }))),
+    )}`,
+  ];
+  let lastError;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        headers: {
+          Accept: "application/json,text/plain,*/*",
+          Referer: "https://music.163.com/",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(12_000),
+      });
+
+      if (!response.ok) {
+        lastError = new Error(`网易云歌曲详情接口返回了 ${response.status} 状态`);
+        continue;
+      }
+
+      const payload = await response.json();
+      if (payload.code === 200 && Array.isArray(payload.songs)) {
+        return normalizeNeteaseTrackList(payload.songs);
+      }
+      lastError = new Error(payload.message || payload.msg || "网易云没有返回歌曲详情");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError?.name === "TimeoutError") {
+    throw new Error("连接网易云歌曲详情接口超时，请稍后重试");
+  }
+  throw lastError || new Error("网易云歌曲详情接口暂时不可用");
 }
 
 async function fetchQQPlaylist(playlistId, encodedHostUin) {
@@ -382,34 +450,47 @@ async function handleNeteasePlaylistApi(request, response) {
     const playlistId = await resolveSharedPlaylistId(body.url);
     playlistReference.id = playlistId;
 
-    const playlist = normalizeTracks(await fetchPlaylistPayload(playlistId));
+    const playlistPayload = await fetchPlaylistPayload(playlistId);
+    const playlist = normalizeTracks(playlistPayload);
     playlistReference = { id: playlist.id || playlistId, name: playlist.name };
-    if (!playlist.tracks.length) {
+    const allTrackIds = neteaseTrackIds(playlistPayload);
+    if (!allTrackIds.length) {
       throw new Error(
         playlist.trackCount === 0
           ? "这个歌单目前没有歌曲"
-          : "歌单存在，但网易云没有返回歌曲详情；如果是私密歌单，请先设为公开",
+          : "歌单存在，但网易云没有返回完整歌曲列表；如果是私密歌单，请先设为公开",
       );
     }
-    if (playlist.tracks.length < limit) {
-      throw new Error(`这个歌单只有 ${playlist.tracks.length} 首可用歌曲，当前布局需要 ${limit} 首`);
+
+    const sampleSize = Math.min(allTrackIds.length, limit * 2);
+    const sampledTrackIds = randomSample(allTrackIds, sampleSize);
+    const sampledTracks = await fetchNeteaseSongDetails(sampledTrackIds);
+    const uniqueTracks = uniqueTracksByCover(sampledTracks);
+    if (uniqueTracks.length < limit) {
+      throw new Error(
+        `本次随机抽取 ${sampleSize} 首歌曲后只有 ${uniqueTracks.length} 张不重复的专辑封面，当前布局需要 ${limit} 张`,
+      );
     }
 
-    const selected = randomTracks(playlist.tracks, limit);
+    const selected = randomTracks(uniqueTracks, limit);
     await appendImportLog({
       platform: "netease",
       playlist: playlistReference,
       result: {
         status: "success",
         requested: limit,
-        available: playlist.tracks.length,
+        pool: allTrackIds.length,
+        sampled: sampleSize,
+        available: uniqueTracks.length,
         returned: selected.length,
       },
     });
     writeJson(response, 200, {
       playlist: { id: playlist.id, name: playlist.name },
       requested: limit,
-      available: playlist.tracks.length,
+      pool: allTrackIds.length,
+      sampled: sampleSize,
+      available: uniqueTracks.length,
       tracks: selected,
     });
   } catch (error) {
@@ -450,25 +531,26 @@ async function handleQQPlaylistApi(request, response) {
           : "歌单存在，但 QQ 音乐没有返回可用的专辑封面",
       );
     }
-    if (playlist.tracks.length < limit) {
-      throw new Error(`这个歌单只有 ${playlist.tracks.length} 首可用歌曲，当前布局需要 ${limit} 首`);
+    const uniqueTracks = uniqueTracksByCover(playlist.tracks);
+    if (uniqueTracks.length < limit) {
+      throw new Error(`这个歌单只有 ${uniqueTracks.length} 张不重复的专辑封面，当前布局需要 ${limit} 张`);
     }
 
-    const selected = randomTracks(playlist.tracks, limit);
+    const selected = randomTracks(uniqueTracks, limit);
     await appendImportLog({
       platform: "qq",
       playlist: playlistReference,
       result: {
         status: "success",
         requested: limit,
-        available: playlist.tracks.length,
+        available: uniqueTracks.length,
         returned: selected.length,
       },
     });
     writeJson(response, 200, {
       playlist: { id: playlist.id || playlistId, name: playlist.name },
       requested: limit,
-      available: playlist.tracks.length,
+      available: uniqueTracks.length,
       tracks: selected,
     });
   } catch (error) {
@@ -601,11 +683,15 @@ if (require.main === module) {
 
 module.exports = {
   directPlaylistId,
+  fetchNeteaseSongDetails,
   fetchPlaylistPayload,
   handleCoverProxy,
   isAllowedCoverHost,
   normalizeTracks,
+  neteaseTrackIds,
+  randomSample,
   randomTracks,
   resolveSharedPlaylistId,
   server,
+  uniqueTracksByCover,
 };
