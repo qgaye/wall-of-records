@@ -11,6 +11,7 @@
   --cast-y: 14px;
   --reflection-shift-x: 0px;
   --reflection-shift-y: 0px;
+  --alignment-guide: 174, 168, 155;
 }
 
 * {
@@ -103,16 +104,14 @@ button,
 }
 
 .wall {
-  position: relative;
+  position: fixed;
+  inset: 0;
   z-index: 2;
-  display: grid;
-  width: min(1520px, 100%);
+  width: 100%;
   height: 100vh;
   height: 100dvh;
-  margin: 0 auto;
   overflow: hidden;
-  place-items: center;
-  padding: clamp(42px, 6vh, 64px) clamp(24px, 6vw, 92px);
+  touch-action: none;
 }
 
 .layout-controls {
@@ -138,6 +137,7 @@ button,
 
 .layout-option,
 .cover-import span,
+.reset-layout span,
 .share-control span {
   display: inline-grid;
   height: 24px;
@@ -162,6 +162,7 @@ button,
 
 .layout-option + .layout-option,
 .cover-import,
+.reset-layout,
 .share-control {
   border-left: 1px solid rgba(59, 55, 47, 0.1);
 }
@@ -174,12 +175,14 @@ button,
 
 .layout-option:focus-visible,
 .cover-import:focus-within,
+.reset-layout:focus-visible,
 .share-control:focus-visible {
   outline: 1px solid rgba(35, 34, 30, 0.72);
   outline-offset: 2px;
 }
 
 .cover-import,
+.reset-layout,
 .share-control {
   position: relative;
   display: inline-flex;
@@ -191,6 +194,7 @@ button,
 }
 
 .cover-import span,
+.reset-layout span,
 .share-control span {
   min-width: 63px;
   padding: 0 9px;
@@ -203,6 +207,43 @@ button,
 .share-control[data-state="copied"] span {
   background: rgba(42, 39, 34, 0.88);
   color: #f0ece2;
+}
+
+.reset-layout {
+  cursor: pointer;
+}
+
+.canvas-hint {
+  position: fixed;
+  bottom: clamp(18px, 3vw, 34px);
+  left: clamp(18px, 3vw, 44px);
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  color: rgba(59, 56, 49, 0.48);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  pointer-events: none;
+  text-transform: uppercase;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.canvas-hint span {
+  display: inline-grid;
+  width: 21px;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid rgba(59, 56, 49, 0.2);
+  border-radius: 50%;
+  font-size: 10px;
+}
+
+body[data-canvas-interacted="true"] .canvas-hint {
+  opacity: 0;
+  transform: translateY(5px);
 }
 
 .playlist-dialog {
@@ -684,9 +725,48 @@ button,
 }
 
 .gallery-stage {
-  position: relative;
-  width: var(--stage-width, 1054px);
-  height: var(--stage-height, 512px);
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.alignment-guides {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.alignment-guide {
+  position: absolute;
+  display: block;
+  background: rgba(var(--alignment-guide), 0.72);
+  box-shadow:
+    0 0 0 1px rgba(255, 253, 246, 0.72),
+    0 0 8px rgba(255, 249, 232, 0.34);
+  opacity: 0;
+  transition: opacity 60ms ease;
+}
+
+.alignment-guide.is-visible {
+  opacity: 1;
+}
+
+.alignment-guide--vertical {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  transform: translate3d(var(--guide-position, 0px), 0, 0);
+}
+
+.alignment-guide--horizontal {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  transform: translate3d(0, var(--guide-position, 0px), 0);
 }
 
 .record-grid {
@@ -695,24 +775,91 @@ button,
   --scene-width: 1062px;
   --scene-height: 512px;
   position: absolute;
-  top: 0;
-  left: 0;
-  display: grid;
-  width: var(--scene-width);
-  height: var(--scene-height);
-  grid-template-columns: repeat(var(--layout-columns), var(--panel-size));
-  grid-auto-rows: var(--panel-size);
-  gap: var(--panel-gap-y) var(--panel-gap-x);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   perspective: 2600px;
-  transform: scale(var(--scene-scale)) rotateX(0.22deg) rotateY(-0.32deg);
-  transform-origin: top left;
 }
 
 .record-item {
+  position: absolute;
   width: var(--panel-size);
   height: var(--panel-size);
-  transform: translate(var(--mount-x, 0px), var(--mount-y, 0px)) rotate(var(--mount-rotate, 0deg));
-  transform-origin: center;
+  backface-visibility: hidden;
+  contain: layout;
+  cursor: grab;
+  outline: none;
+  touch-action: none;
+  transform: translate3d(var(--item-x, 0px), var(--item-y, 0px), 0) scale(var(--item-scale, var(--scene-scale)));
+  transform-origin: top left;
+  user-select: none;
+  will-change: transform;
+  -webkit-user-select: none;
+}
+
+.record-item:focus-visible .acrylic-frame {
+  outline: 1px solid rgba(46, 44, 39, 0.72);
+  outline-offset: 6px;
+}
+
+.record-item.is-dragging {
+  cursor: grabbing;
+}
+
+.record-item.is-snapped .acrylic-frame {
+  outline: 1px solid rgba(var(--alignment-guide), 0.5);
+  outline-offset: 3px;
+}
+
+.record-grid.is-dragging .plate-reflection,
+.record-grid.is-resizing .plate-reflection {
+  opacity: 0.48;
+}
+
+.resize-handle {
+  position: absolute;
+  z-index: 9;
+  width: 42px;
+  aspect-ratio: 1;
+  border: 0;
+  background: transparent;
+  outline: none;
+  touch-action: none;
+}
+
+.resize-handle--tl,
+.resize-handle--tr {
+  top: 0;
+}
+
+.resize-handle--bl,
+.resize-handle--br {
+  bottom: 0;
+}
+
+.resize-handle--tl,
+.resize-handle--bl {
+  left: 0;
+}
+
+.resize-handle--tr,
+.resize-handle--br {
+  right: 0;
+}
+
+.resize-handle--tl,
+.resize-handle--br {
+  cursor: nwse-resize;
+}
+
+.resize-handle--tr,
+.resize-handle--bl {
+  cursor: nesw-resize;
+}
+
+.resize-handle:focus-visible {
+  outline: 1px solid rgba(46, 44, 39, 0.72);
+  outline-offset: -5px;
 }
 
 .acrylic-frame {
@@ -722,6 +869,13 @@ button,
   height: 100%;
   padding: var(--plate-space);
   background: transparent;
+  transform: translate(var(--mount-x, 0px), var(--mount-y, 0px)) rotate(var(--mount-rotate, 0deg));
+  transform-origin: center;
+  transition: transform 140ms ease;
+}
+
+.record-item.is-dragging .acrylic-frame {
+  transform: translate(var(--mount-x, 0px), var(--mount-y, 0px)) rotate(var(--mount-rotate, 0deg)) scale(1.012);
 }
 
 .plate-depth,
@@ -791,7 +945,7 @@ button,
   background-position:
     calc(var(--reflection-x, 0px) + var(--reflection-shift-x)) calc(var(--reflection-y, 0px) + var(--reflection-shift-y)),
     calc(var(--reflection-x, 0px) + var(--reflection-shift-x)) calc(var(--reflection-y, 0px) + var(--reflection-shift-y));
-  background-size: var(--scene-width) var(--scene-height);
+  background-size: var(--item-scene-width, var(--scene-width)) var(--item-scene-height, var(--scene-height));
   mix-blend-mode: screen;
   opacity: 0.72;
 }
@@ -1018,10 +1172,6 @@ button,
 }
 
 @media (max-width: 720px) {
-  .wall {
-    padding: 52px 16px 30px;
-  }
-
   .layout-controls {
     top: 40px;
     opacity: 0.5;
@@ -1058,11 +1208,19 @@ button,
     margin-top: 8px;
     text-align: left;
   }
+
+  .resize-handle {
+    width: 84px;
+  }
 }
 
 @media (pointer: coarse) {
   .layout-controls {
     opacity: 0.55;
+  }
+
+  .canvas-hint {
+    opacity: 0.72;
   }
 }
 

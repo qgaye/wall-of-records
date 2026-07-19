@@ -27,6 +27,14 @@
         <span>导入歌单</span>
       </button>
       <button
+        class="reset-layout"
+        id="resetAlbumPositions"
+        type="button"
+        title="把所有专辑恢复到初始位置和大小"
+      >
+        <span>重置布局</span>
+      </button>
+      <button
         class="share-control"
         id="copyShareLink"
         type="button"
@@ -52,6 +60,16 @@
         <section class="record-grid" id="recordGrid" aria-label="唱片收藏"></section>
       </div>
     </main>
+
+    <div class="alignment-guides" id="alignmentGuides" aria-hidden="true">
+      <span class="alignment-guide alignment-guide--vertical"></span>
+      <span class="alignment-guide alignment-guide--horizontal"></span>
+    </div>
+
+    <p class="canvas-hint" id="canvasHint">
+      <span aria-hidden="true">↗</span>
+      移动或缩放专辑 · 参考线出现时自动吸附
+    </p>
 
     <dialog class="playlist-dialog" id="playlistDialog" aria-labelledby="playlistDialogTitle">
       <div class="playlist-dialog__surface">
@@ -148,6 +166,10 @@
           <span class="screw screw--bl" aria-hidden="true"></span>
           <span class="screw screw--br" aria-hidden="true"></span>
         </div>
+        <span class="resize-handle resize-handle--tl" data-corner="tl" role="slider" tabindex="0" aria-label="从左上角调整专辑大小" aria-valuemin="45" aria-valuemax="180" aria-valuenow="100"></span>
+        <span class="resize-handle resize-handle--tr" data-corner="tr" role="slider" tabindex="0" aria-label="从右上角调整专辑大小" aria-valuemin="45" aria-valuemax="180" aria-valuenow="100"></span>
+        <span class="resize-handle resize-handle--bl" data-corner="bl" role="slider" tabindex="0" aria-label="从左下角调整专辑大小" aria-valuemin="45" aria-valuemax="180" aria-valuenow="100"></span>
+        <span class="resize-handle resize-handle--br" data-corner="br" role="slider" tabindex="0" aria-label="从右下角调整专辑大小" aria-valuemin="45" aria-valuemax="180" aria-valuenow="100"></span>
       </article>
     </template>
 

@@ -1,6 +1,11 @@
 const PANEL_SIZE = 240;
 const PANEL_GAP_X = 34;
 const PANEL_GAP_Y = 32;
+const POSITION_PRECISION = 5;
+const MIN_ALBUM_SCALE = 0.45;
+const MAX_ALBUM_SCALE = 1.8;
+const ALIGN_SNAP_THRESHOLD = 12;
+const ALIGN_SNAP_RELEASE_THRESHOLD = 20;
 
 const records = [
   {
@@ -109,6 +114,9 @@ const grid = document.querySelector("#recordGrid");
 const stage = document.querySelector("#galleryStage");
 const wall = document.querySelector(".wall");
 const template = document.querySelector("#recordTemplate");
+const alignmentGuides = document.querySelector("#alignmentGuides");
+const verticalGuide = alignmentGuides.querySelector(".alignment-guide--vertical");
+const horizontalGuide = alignmentGuides.querySelector(".alignment-guide--horizontal");
 const playlistDialog = document.querySelector("#playlistDialog");
 const playlistForm = document.querySelector("#playlistImportForm");
 const playlistUrl = document.querySelector("#playlistUrl");
@@ -117,6 +125,7 @@ const playlistDialogKicker = document.querySelector("#playlistDialogKicker");
 const playlistHint = document.querySelector("#playlistHint");
 const platformOptions = [...document.querySelectorAll('input[name="playlistPlatform"]')];
 const importButton = document.querySelector("#openPlaylistImport");
+const resetPositionsButton = document.querySelector("#resetAlbumPositions");
 const parsePlaylistButton = document.querySelector("#parsePlaylistButton");
 const requiredCoverCount = document.querySelector("#requiredCoverCount");
 const currentLayoutLabel = document.querySelector("#currentLayoutLabel");
@@ -134,6 +143,16 @@ let importedPlaylistName = "网易云歌单";
 let shareFeedbackTimer;
 let shareImageObjectUrl;
 let shareImageGeneration = 0;
+let sceneScale = 1;
+let albumPositions = [];
+let albumSizes = records.map(() => 1);
+let positionLayout = "";
+let activeDrag;
+let activeResize;
+let topStackOrder = records.length;
+let canvasMetrics;
+let pointerFrame;
+let pendingPointer;
 
 const playlistPlatforms = {
   netease: {
@@ -190,16 +209,29 @@ function renderRecords() {
     const item = fragment.querySelector(".record-item");
     const frame = fragment.querySelector(".acrylic-frame");
     const slot = fragment.querySelector(".album-slot");
+    const resizeHandles = [...fragment.querySelectorAll(".resize-handle")];
     const variation = mountVariations[index];
     const imported = importedCovers[index];
+    const accessibleName = imported
+      ? `${imported.name}，${imported.artist}，专辑《${imported.album}》`
+      : `${record.name} 专辑展示`;
 
     item.style.setProperty("--mount-x", `${variation.x}px`);
     item.style.setProperty("--mount-y", `${variation.y}px`);
     item.style.setProperty("--mount-rotate", `${variation.rotate}deg`);
-    frame.setAttribute(
-      "aria-label",
-      imported ? `${imported.name}，${imported.artist}，专辑《${imported.album}》` : `${record.name} 专辑展示`,
-    );
+    item.dataset.index = String(index);
+    item.tabIndex = 0;
+    item.setAttribute("role", "group");
+    item.setAttribute("aria-label", accessibleName);
+    item.setAttribute("aria-describedby", "canvasHint");
+    item.setAttribute("aria-roledescription", "可拖动专辑");
+    item.setAttribute("aria-grabbed", "false");
+    item.style.zIndex = String(index + 1);
+    frame.setAttribute("aria-label", accessibleName);
+    resizeHandles.forEach((handle) => {
+      const cornerNames = { tl: "左上角", tr: "右上角", bl: "左下角", br: "右下角" };
+      handle.setAttribute("aria-label", `从${cornerNames[handle.dataset.corner]}调整 ${accessibleName} 的大小`);
+    });
 
     if (imported) {
       slot.classList.add("album-slot--uploaded");
@@ -212,35 +244,116 @@ function renderRecords() {
   });
 }
 
-function positionReflectionCrops(layout) {
+function getCanvasMetrics(layout) {
   const scene = getSceneSize(layout);
-  grid.style.setProperty("--scene-width", `${scene.width}px`);
-  grid.style.setProperty("--scene-height", `${scene.height}px`);
+  const bounds = stage.getBoundingClientRect();
+  const { width, height, left, top } = bounds;
+  const insetX = Math.min(92, Math.max(16, width * 0.06));
+  const insetY = Math.min(64, Math.max(30, height * 0.06));
+  const availableWidth = Math.max(1, width - insetX * 2);
+  const availableHeight = Math.max(1, height - insetY * 2);
+  const scale = Math.min(availableWidth / scene.width, availableHeight / scene.height, 1.12);
+  const panelSize = PANEL_SIZE * scale;
 
-  grid.querySelectorAll(".record-item").forEach((item, index) => {
+  return { scene, width, height, left, top, scale, panelSize };
+}
+
+function buildDefaultPositions(layout, metrics) {
+  const scaledWidth = metrics.scene.width * metrics.scale;
+  const scaledHeight = metrics.scene.height * metrics.scale;
+  const originX = (metrics.width - scaledWidth) / 2;
+  const originY = (metrics.height - scaledHeight) / 2;
+  const maxX = Math.max(0, metrics.width - metrics.panelSize);
+  const maxY = Math.max(0, metrics.height - metrics.panelSize);
+
+  return records.map((_, index) => {
     const column = index % layout.columns;
     const row = Math.floor(index / layout.columns);
-    const worldX = column * (PANEL_SIZE + PANEL_GAP_X);
-    const worldY = row * (PANEL_SIZE + PANEL_GAP_Y);
-
-    item.style.setProperty("--reflection-x", `${-worldX}px`);
-    item.style.setProperty("--reflection-y", `${-worldY}px`);
+    const x = originX + column * (PANEL_SIZE + PANEL_GAP_X) * metrics.scale;
+    const y = originY + row * (PANEL_SIZE + PANEL_GAP_Y) * metrics.scale;
+    return {
+      x: maxX ? Math.min(1, Math.max(0, x / maxX)) : 0,
+      y: maxY ? Math.min(1, Math.max(0, y / maxY)) : 0,
+    };
   });
 }
 
-function fitSceneToViewport(layout) {
-  const scene = getSceneSize(layout);
-  const wallStyle = getComputedStyle(wall);
-  const horizontalPadding = parseFloat(wallStyle.paddingLeft) + parseFloat(wallStyle.paddingRight);
-  const verticalPadding = parseFloat(wallStyle.paddingTop) + parseFloat(wallStyle.paddingBottom);
-  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-  const availableWidth = wall.clientWidth - horizontalPadding;
-  const availableHeight = viewportHeight - verticalPadding;
-  const scale = Math.min(availableWidth / scene.width, availableHeight / scene.height, 1.12);
+function updateItemReflection(item, x, y) {
+  const index = Number(item.dataset.index);
+  const safeScale = sceneScale * getAlbumScale(index) || 1;
+  item.style.setProperty("--reflection-x", `${(-x / safeScale).toFixed(2)}px`);
+  item.style.setProperty("--reflection-y", `${(-y / safeScale).toFixed(2)}px`);
+  if (canvasMetrics) {
+    item.style.setProperty("--item-scene-width", `${(canvasMetrics.width / safeScale).toFixed(2)}px`);
+    item.style.setProperty("--item-scene-height", `${(canvasMetrics.height / safeScale).toFixed(2)}px`);
+  }
+}
 
-  grid.style.setProperty("--scene-scale", scale.toFixed(4));
-  stage.style.setProperty("--stage-width", `${Math.floor(scene.width * scale)}px`);
-  stage.style.setProperty("--stage-height", `${Math.floor(scene.height * scale)}px`);
+function getAlbumScale(index) {
+  return Math.min(MAX_ALBUM_SCALE, Math.max(MIN_ALBUM_SCALE, albumSizes[index] || 1));
+}
+
+function getAlbumPanelSize(index, metrics) {
+  return PANEL_SIZE * metrics.scale * getAlbumScale(index);
+}
+
+function setItemScale(item, index, value) {
+  const nextScale = Math.min(MAX_ALBUM_SCALE, Math.max(MIN_ALBUM_SCALE, value));
+  albumSizes[index] = nextScale;
+  item.style.setProperty("--item-scale", (sceneScale * nextScale).toFixed(5));
+  item.querySelectorAll(".resize-handle").forEach((handle) => {
+    handle.setAttribute("aria-valuenow", String(Math.round(nextScale * 100)));
+  });
+  return nextScale;
+}
+
+function setItemPosition(item, index, x, y, metrics, updateState = true, updateReflection = true) {
+  const panelSize = getAlbumPanelSize(index, metrics);
+  const maxX = Math.max(0, metrics.width - panelSize);
+  const maxY = Math.max(0, metrics.height - panelSize);
+  const nextX = Math.min(maxX, Math.max(0, x));
+  const nextY = Math.min(maxY, Math.max(0, y));
+
+  item.style.setProperty("--item-x", `${nextX.toFixed(2)}px`);
+  item.style.setProperty("--item-y", `${nextY.toFixed(2)}px`);
+  item.canvasX = nextX;
+  item.canvasY = nextY;
+  if (updateReflection) updateItemReflection(item, nextX, nextY);
+
+  if (updateState) {
+    albumPositions[index] = {
+      x: maxX ? nextX / maxX : 0,
+      y: maxY ? nextY / maxY : 0,
+    };
+  }
+}
+
+function fitSceneToViewport(layout, resetPositions = false) {
+  const metrics = getCanvasMetrics(layout);
+  canvasMetrics = metrics;
+  sceneScale = metrics.scale;
+  grid.style.setProperty("--scene-scale", sceneScale.toFixed(4));
+  grid.style.setProperty("--scene-width", `${(metrics.width / sceneScale).toFixed(2)}px`);
+  grid.style.setProperty("--scene-height", `${(metrics.height / sceneScale).toFixed(2)}px`);
+
+  if (resetPositions || positionLayout !== grid.dataset.layout || albumPositions.length < layout.visible) {
+    albumPositions = buildDefaultPositions(layout, metrics);
+    positionLayout = grid.dataset.layout;
+  }
+
+  grid.querySelectorAll(".record-item").forEach((item, index) => {
+    const position = albumPositions[index] || { x: 0.5, y: 0.5 };
+    setItemScale(item, index, getAlbumScale(index));
+    const panelSize = getAlbumPanelSize(index, metrics);
+    const maxX = Math.max(0, metrics.width - panelSize);
+    const maxY = Math.max(0, metrics.height - panelSize);
+    setItemPosition(item, index, position.x * maxX, position.y * maxY, metrics, false);
+  });
+
+  if (activeDrag) {
+    activeDrag.offsetX = activeDrag.lastClientX - metrics.left - activeDrag.item.canvasX;
+    activeDrag.offsetY = activeDrag.lastClientY - metrics.top - activeDrag.item.canvasY;
+  }
 }
 
 function scheduleSceneFit() {
@@ -254,6 +367,7 @@ function scheduleSceneFit() {
 function applyLayout(layoutName) {
   const layout = layoutSettings[layoutName];
   if (!layout) return;
+  const layoutChanged = Boolean(grid.dataset.layout && grid.dataset.layout !== layoutName);
 
   grid.dataset.layout = layoutName;
   grid.style.setProperty("--layout-columns", layout.columns);
@@ -268,21 +382,467 @@ function applyLayout(layoutName) {
   });
 
   updateDialogLayoutSummary(layout);
-  positionReflectionCrops(layout);
-  scheduleSceneFit();
+  window.cancelAnimationFrame(fitFrame);
+  fitFrame = window.requestAnimationFrame(() => fitSceneToViewport(layout, layoutChanged));
 }
 
-function updateReflectionFromPointer(event) {
-  const bounds = grid.getBoundingClientRect();
-  const normalizedX = (event.clientX - bounds.left) / bounds.width - 0.5;
-  const normalizedY = (event.clientY - bounds.top) / bounds.height - 0.5;
+function updateReflectionFromPointer(clientX, clientY) {
+  if (!canvasMetrics) return;
+  const normalizedX = (clientX - canvasMetrics.left) / canvasMetrics.width - 0.5;
+  const normalizedY = (clientY - canvasMetrics.top) / canvasMetrics.height - 0.5;
   grid.style.setProperty("--reflection-shift-x", `${(-normalizedX * 14).toFixed(2)}px`);
   grid.style.setProperty("--reflection-shift-y", `${(-normalizedY * 6).toFixed(2)}px`);
 }
 
 function resetReflection() {
+  if (!activeDrag && !activeResize && pointerFrame) {
+    window.cancelAnimationFrame(pointerFrame);
+    pointerFrame = undefined;
+    pendingPointer = undefined;
+  }
   grid.style.setProperty("--reflection-shift-x", "0px");
   grid.style.setProperty("--reflection-shift-y", "0px");
+}
+
+function bringItemToFront(item) {
+  topStackOrder += 1;
+  item.style.zIndex = String(topStackOrder);
+}
+
+function startAlbumDrag(event) {
+  const item = event.target.closest(".record-item");
+  if (
+    !item ||
+    event.target.closest(".resize-handle") ||
+    activeResize ||
+    !event.isPrimary ||
+    (event.pointerType === "mouse" && event.button !== 0)
+  ) return;
+
+  const metrics = canvasMetrics || getCanvasMetrics(layoutSettings[grid.dataset.layout]);
+  canvasMetrics = metrics;
+  const x = item.canvasX || 0;
+  const y = item.canvasY || 0;
+  activeDrag = {
+    item,
+    index: Number(item.dataset.index),
+    pointerId: event.pointerId,
+    offsetX: event.clientX - metrics.left - x,
+    offsetY: event.clientY - metrics.top - y,
+    lastClientX: event.clientX,
+    lastClientY: event.clientY,
+    size: getAlbumPanelSize(Number(item.dataset.index), metrics),
+    targets: collectAlignmentTargets(Number(item.dataset.index), metrics),
+    snapCandidates: {},
+  };
+
+  hideAlignmentGuides();
+  bringItemToFront(item);
+  grid.classList.add("is-dragging");
+  item.classList.add("is-dragging");
+  item.setAttribute("aria-grabbed", "true");
+  item.setPointerCapture(event.pointerId);
+  document.body.dataset.canvasInteracted = "true";
+  event.preventDefault();
+}
+
+function getCornerDirections(corner) {
+  return {
+    x: corner.endsWith("r") ? 1 : -1,
+    y: corner.startsWith("b") ? 1 : -1,
+  };
+}
+
+function collectAlignmentTargets(activeIndex, metrics) {
+  const targets = {
+    x: [0, metrics.width / 2, metrics.width],
+    y: [0, metrics.height / 2, metrics.height],
+  };
+
+  grid.querySelectorAll(".record-item:not([hidden])").forEach((item) => {
+    const index = Number(item.dataset.index);
+    if (index === activeIndex) return;
+    const size = getAlbumPanelSize(index, metrics);
+    const left = item.canvasX || 0;
+    const top = item.canvasY || 0;
+    targets.x.push(left, left + size / 2, left + size);
+    targets.y.push(top, top + size / 2, top + size);
+  });
+
+  return {
+    x: [...new Set(targets.x.map((value) => Number(value.toFixed(2))))],
+    y: [...new Set(targets.y.map((value) => Number(value.toFixed(2))))],
+  };
+}
+
+function findMoveSnap(axis, rawPosition) {
+  const drag = activeDrag;
+  if (!drag) return undefined;
+
+  const limit = axis === "x" ? canvasMetrics.width : canvasMetrics.height;
+  const maxPosition = Math.max(0, limit - drag.size);
+  const subjects = axis === "x" ? ["left", "centerX", "right"] : ["top", "centerY", "bottom"];
+  const offsets = [0, drag.size / 2, drag.size].map((value, index) => ({
+    value,
+    priority: index === 1 ? 1 : 0,
+    subject: subjects[index],
+  }));
+  const candidates = [];
+  const retained = drag.snapCandidates[axis];
+  if (retained) {
+    const retainedDistance = Math.abs(retained.position - rawPosition);
+    if (retainedDistance <= ALIGN_SNAP_RELEASE_THRESHOLD) {
+      candidates.push({ ...retained, distance: retainedDistance, retained: true });
+    }
+  }
+
+  drag.targets[axis].forEach((target) => {
+    offsets.forEach((offset) => {
+      const position = target - offset.value;
+      const distance = Math.abs(position - rawPosition);
+      if (position >= 0 && position <= maxPosition && distance <= ALIGN_SNAP_THRESHOLD) {
+        candidates.push({ axis, target, position, distance, priority: offset.priority, subject: offset.subject });
+      }
+    });
+  });
+
+  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  drag.snapCandidates[axis] = candidates[0];
+  return drag.snapCandidates[axis];
+}
+
+function showAlignmentFeedback({ xSnap, ySnap, item }) {
+  const x = xSnap?.target;
+  const y = ySnap?.target;
+  const hasSnap = x !== undefined || y !== undefined;
+  verticalGuide.style.setProperty("--guide-position", `${x || 0}px`);
+  horizontalGuide.style.setProperty("--guide-position", `${y || 0}px`);
+  verticalGuide.classList.toggle("is-visible", x !== undefined);
+  horizontalGuide.classList.toggle("is-visible", y !== undefined);
+  item.classList.toggle("is-snapped", hasSnap);
+}
+
+function moveAlbumFromPointer(pointer) {
+  if (!activeDrag || !canvasMetrics) return;
+  const maxX = Math.max(0, canvasMetrics.width - activeDrag.size);
+  const maxY = Math.max(0, canvasMetrics.height - activeDrag.size);
+  const rawX = Math.min(maxX, Math.max(0, pointer.clientX - canvasMetrics.left - activeDrag.offsetX));
+  const rawY = Math.min(maxY, Math.max(0, pointer.clientY - canvasMetrics.top - activeDrag.offsetY));
+  const snapX = findMoveSnap("x", rawX);
+  const snapY = findMoveSnap("y", rawY);
+
+  setItemPosition(
+    activeDrag.item,
+    activeDrag.index,
+    snapX?.position ?? rawX,
+    snapY?.position ?? rawY,
+    canvasMetrics,
+    true,
+    false,
+  );
+  showAlignmentFeedback({
+    xSnap: snapX,
+    ySnap: snapY,
+    item: activeDrag.item,
+  });
+}
+
+function findResizeSnap(rawSize) {
+  const resize = activeResize;
+  if (!resize) return { size: rawSize };
+  const candidates = [];
+  if (resize.snapCandidate) {
+    const divisor = resize.snapCandidate.priority === 1 ? 2 : 1;
+    const retainedDistance = Math.abs(resize.snapCandidate.size - rawSize) / divisor;
+    if (retainedDistance <= ALIGN_SNAP_RELEASE_THRESHOLD) {
+      candidates.push({ ...resize.snapCandidate, distance: retainedDistance, retained: true });
+    }
+  }
+
+  const addCandidates = (axis, anchor, direction) => {
+    const edgeSubject = axis === "x"
+      ? direction === 1 ? "right" : "left"
+      : direction === 1 ? "bottom" : "top";
+    const centerSubject = axis === "x" ? "centerX" : "centerY";
+    resize.targets[axis].forEach((target) => {
+      const edgeSize = direction * (target - anchor);
+      const edgeDistance = Math.abs(edgeSize - rawSize);
+      if (edgeSize >= resize.minSize && edgeSize <= resize.maxSize && edgeDistance <= ALIGN_SNAP_THRESHOLD) {
+        candidates.push({ axis, target, size: edgeSize, distance: edgeDistance, priority: 0, subject: edgeSubject });
+      }
+
+      const centerSize = direction * (target - anchor) * 2;
+      const centerDistance = Math.abs(centerSize - rawSize) / 2;
+      if (centerSize >= resize.minSize && centerSize <= resize.maxSize && centerDistance <= ALIGN_SNAP_THRESHOLD) {
+        candidates.push({ axis, target, size: centerSize, distance: centerDistance, priority: 1, subject: centerSubject });
+      }
+    });
+  };
+
+  addCandidates("x", resize.anchorX, resize.xDirection);
+  addCandidates("y", resize.anchorY, resize.yDirection);
+  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  resize.snapCandidate = candidates[0];
+  return resize.snapCandidate || { size: rawSize };
+}
+
+function findGuideMatch(axis, size) {
+  if (!activeResize) return undefined;
+  const anchor = axis === "x" ? activeResize.anchorX : activeResize.anchorY;
+  const direction = axis === "x" ? activeResize.xDirection : activeResize.yDirection;
+  const edgeSubject = axis === "x"
+    ? direction === 1 ? "right" : "left"
+    : direction === 1 ? "bottom" : "top";
+  const subjectLines = [
+    { value: anchor + direction * size, subject: edgeSubject },
+    { value: anchor + direction * size / 2, subject: axis === "x" ? "centerX" : "centerY" },
+  ];
+  let match;
+
+  activeResize.targets[axis].forEach((target) => {
+    subjectLines.forEach((subject) => {
+      const distance = Math.abs(subject.value - target);
+      if (distance <= 0.8 && (!match || distance < match.distance)) {
+        match = { axis, target, distance, subject: subject.subject };
+      }
+    });
+  });
+  return match;
+}
+
+function updateAlignmentGuides(size, snap) {
+  const xSnap = snap.axis === "x" ? snap : findGuideMatch("x", size);
+  const ySnap = snap.axis === "y" ? snap : findGuideMatch("y", size);
+  showAlignmentFeedback({ xSnap, ySnap, item: activeResize.item });
+}
+
+function hideAlignmentGuides() {
+  verticalGuide.classList.remove("is-visible");
+  horizontalGuide.classList.remove("is-visible");
+  grid.querySelector(".record-item.is-snapped")?.classList.remove("is-snapped");
+}
+
+function startAlbumResize(event) {
+  const handle = event.target.closest(".resize-handle");
+  const item = handle?.closest(".record-item");
+  if (!handle || !item || activeDrag || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+
+  const metrics = canvasMetrics || getCanvasMetrics(layoutSettings[grid.dataset.layout]);
+  canvasMetrics = metrics;
+  const index = Number(item.dataset.index);
+  const startSize = getAlbumPanelSize(index, metrics);
+  const directions = getCornerDirections(handle.dataset.corner);
+  const anchorX = directions.x === 1 ? item.canvasX : item.canvasX + startSize;
+  const anchorY = directions.y === 1 ? item.canvasY : item.canvasY + startSize;
+  activeResize = {
+    handle,
+    item,
+    index,
+    corner: handle.dataset.corner,
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startSize,
+    anchorX,
+    anchorY,
+    xDirection: directions.x,
+    yDirection: directions.y,
+    minSize: PANEL_SIZE * sceneScale * MIN_ALBUM_SCALE,
+    maxSize: Math.min(
+      PANEL_SIZE * sceneScale * MAX_ALBUM_SCALE,
+      directions.x === 1 ? metrics.width - anchorX : anchorX,
+      directions.y === 1 ? metrics.height - anchorY : anchorY,
+    ),
+    targets: collectAlignmentTargets(index, metrics),
+  };
+
+  hideAlignmentGuides();
+  bringItemToFront(item);
+  grid.classList.add("is-resizing");
+  item.classList.add("is-resizing");
+  handle.setPointerCapture(event.pointerId);
+  document.body.dataset.canvasInteracted = "true";
+  event.preventDefault();
+}
+
+function resizeAlbumFromPointer(pointer) {
+  if (!activeResize || !canvasMetrics) return;
+  const deltaX = activeResize.xDirection * (pointer.clientX - activeResize.startClientX);
+  const deltaY = activeResize.yDirection * (pointer.clientY - activeResize.startClientY);
+  const delta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : deltaY;
+  const rawSize = Math.min(activeResize.maxSize, Math.max(activeResize.minSize, activeResize.startSize + delta));
+  const snap = findResizeSnap(rawSize);
+  const nextSize = snap.size;
+  const nextX = activeResize.xDirection === 1 ? activeResize.anchorX : activeResize.anchorX - nextSize;
+  const nextY = activeResize.yDirection === 1 ? activeResize.anchorY : activeResize.anchorY - nextSize;
+  setItemScale(activeResize.item, activeResize.index, nextSize / (PANEL_SIZE * sceneScale));
+  setItemPosition(
+    activeResize.item,
+    activeResize.index,
+    nextX,
+    nextY,
+    canvasMetrics,
+    true,
+    false,
+  );
+  activeResize.currentSize = nextSize;
+  updateAlignmentGuides(nextSize, snap);
+}
+
+function flushPointerFrame() {
+  pointerFrame = undefined;
+  if (!pendingPointer) return;
+  const pointer = pendingPointer;
+  pendingPointer = undefined;
+
+  if (activeResize && activeResize.pointerId === pointer.pointerId) {
+    resizeAlbumFromPointer(pointer);
+    return;
+  }
+
+  if (activeDrag && activeDrag.pointerId === pointer.pointerId && canvasMetrics) {
+    moveAlbumFromPointer(pointer);
+    return;
+  }
+
+  updateReflectionFromPointer(pointer.clientX, pointer.clientY);
+}
+
+function moveAlbum(event) {
+  if (activeDrag?.pointerId === event.pointerId) {
+    activeDrag.lastClientX = event.clientX;
+    activeDrag.lastClientY = event.clientY;
+  }
+  pendingPointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    pointerId: event.pointerId,
+  };
+  if (!pointerFrame) pointerFrame = window.requestAnimationFrame(flushPointerFrame);
+  if (activeDrag?.pointerId === event.pointerId || activeResize?.pointerId === event.pointerId) event.preventDefault();
+}
+
+function finishAlbumDrag(event) {
+  if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+  if (pointerFrame) window.cancelAnimationFrame(pointerFrame);
+  pointerFrame = undefined;
+  pendingPointer = undefined;
+
+  const { item } = activeDrag;
+  const cancelled = event.type === "pointercancel";
+  if (!cancelled) moveAlbumFromPointer({ clientX: event.clientX, clientY: event.clientY });
+  updateItemReflection(item, item.canvasX, item.canvasY);
+  hideAlignmentGuides();
+  if (!cancelled) updateReflectionFromPointer(event.clientX, event.clientY);
+  grid.classList.remove("is-dragging");
+  item.classList.remove("is-dragging");
+  item.setAttribute("aria-grabbed", "false");
+  if (item.hasPointerCapture(event.pointerId)) item.releasePointerCapture(event.pointerId);
+  activeDrag = undefined;
+}
+
+function finishAlbumResize(event) {
+  if (!activeResize || activeResize.pointerId !== event.pointerId) return;
+  if (pointerFrame) window.cancelAnimationFrame(pointerFrame);
+  pointerFrame = undefined;
+  pendingPointer = undefined;
+
+  const { handle, item } = activeResize;
+  if (event.type !== "pointercancel") {
+    resizeAlbumFromPointer({ clientX: event.clientX, clientY: event.clientY });
+  }
+  updateItemReflection(item, item.canvasX, item.canvasY);
+  hideAlignmentGuides();
+  grid.classList.remove("is-resizing");
+  item.classList.remove("is-resizing");
+  if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  activeResize = undefined;
+}
+
+function resizeAlbumWithKeyboard(event) {
+  const handle = event.target.closest(".resize-handle");
+  const item = handle?.closest(".record-item");
+  const layout = layoutSettings[grid.dataset.layout];
+  if (!handle || !item || !layout) return;
+
+  const direction = ["ArrowUp", "ArrowRight"].includes(event.key)
+    ? 1
+    : ["ArrowDown", "ArrowLeft"].includes(event.key)
+      ? -1
+      : 0;
+  if (!direction && event.key !== "Home") return;
+
+  const metrics = canvasMetrics || getCanvasMetrics(layout);
+  canvasMetrics = metrics;
+  const index = Number(item.dataset.index);
+  const corner = handle.dataset.corner;
+  const directions = getCornerDirections(corner);
+  const currentSize = getAlbumPanelSize(index, metrics);
+  const anchorX = directions.x === 1 ? item.canvasX : item.canvasX + currentSize;
+  const anchorY = directions.y === 1 ? item.canvasY : item.canvasY + currentSize;
+  const maxSize = Math.min(
+    PANEL_SIZE * sceneScale * MAX_ALBUM_SCALE,
+    directions.x === 1 ? metrics.width - anchorX : anchorX,
+    directions.y === 1 ? metrics.height - anchorY : anchorY,
+  );
+  const step = event.shiftKey ? 0.15 : 0.05;
+  const requestedScale = event.key === "Home" ? 1 : getAlbumScale(index) + direction * step;
+  const nextSize = Math.min(maxSize, Math.max(PANEL_SIZE * sceneScale * MIN_ALBUM_SCALE, requestedScale * PANEL_SIZE * sceneScale));
+  const nextX = directions.x === 1 ? anchorX : anchorX - nextSize;
+  const nextY = directions.y === 1 ? anchorY : anchorY - nextSize;
+  setItemScale(item, index, nextSize / (PANEL_SIZE * sceneScale));
+  setItemPosition(item, index, nextX, nextY, metrics);
+  bringItemToFront(item);
+  document.body.dataset.canvasInteracted = "true";
+  event.preventDefault();
+}
+
+function moveAlbumWithKeyboard(event) {
+  const directions = {
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0],
+    ArrowUp: [0, -1],
+    ArrowDown: [0, 1],
+  };
+  const direction = directions[event.key];
+  if (!direction || event.target.closest(".resize-handle")) return;
+
+  const item = event.target.closest(".record-item");
+  const layout = layoutSettings[grid.dataset.layout];
+  if (!item || !layout) return;
+  const step = event.shiftKey ? 20 : 5;
+  const metrics = canvasMetrics || getCanvasMetrics(layout);
+  canvasMetrics = metrics;
+  const index = Number(item.dataset.index);
+  setItemPosition(
+    item,
+    index,
+    (item.canvasX || 0) + direction[0] * step,
+    (item.canvasY || 0) + direction[1] * step,
+    metrics,
+  );
+  bringItemToFront(item);
+  document.body.dataset.canvasInteracted = "true";
+  event.preventDefault();
+}
+
+function resetAlbumPositions() {
+  const layout = layoutSettings[grid.dataset.layout];
+  if (!layout) return;
+  albumSizes = records.map(() => 1);
+  hideAlignmentGuides();
+  fitSceneToViewport(layout, true);
+  grid.querySelectorAll(".record-item").forEach((item, index) => {
+    item.style.zIndex = String(index + 1);
+  });
+  topStackOrder = records.length;
+  delete document.body.dataset.canvasInteracted;
+
+  const label = resetPositionsButton.querySelector("span");
+  label.textContent = "已重置";
+  window.setTimeout(() => {
+    label.textContent = "重置布局";
+  }, 1200);
 }
 
 function encodeBase64Url(value) {
@@ -314,8 +874,9 @@ function isAllowedSharedCover(value) {
 }
 
 function compactShareState() {
+  const layout = layoutSettings[grid.dataset.layout || "4x2"];
   return {
-    v: 1,
+    v: 3,
     l: grid.dataset.layout || "4x2",
     p: importedPlaylistName,
     t: importedCovers.slice(0, records.length).map((track) => ({
@@ -324,6 +885,11 @@ function compactShareState() {
       b: track.album,
       c: track.cover,
     })),
+    o: albumPositions.slice(0, layout.visible).map((position) => [
+      Number((position?.x || 0).toFixed(POSITION_PRECISION)),
+      Number((position?.y || 0).toFixed(POSITION_PRECISION)),
+    ]),
+    s: albumSizes.slice(0, layout.visible).map((_, index) => Number(getAlbumScale(index).toFixed(3))),
   };
 }
 
@@ -333,7 +899,7 @@ function readShareState() {
 
   try {
     const state = decodeBase64Url(encoded);
-    if (state?.v !== 1 || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
+    if (![1, 2, 3].includes(state?.v) || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
 
     const tracks = state.t.slice(0, records.length).map((track) => ({
       name: String(track?.n || "未命名歌曲").slice(0, 160),
@@ -343,10 +909,31 @@ function readShareState() {
     }));
 
     if (!tracks.length || tracks.some((track) => !isAllowedSharedCover(track.cover))) return null;
+    const positions = state.v >= 2 && Array.isArray(state.o)
+      ? state.o.slice(0, records.length).map((position) => ({
+          x: Number(position?.[0]),
+          y: Number(position?.[1]),
+        }))
+      : [];
+    const hasValidPositions = positions.length >= tracks.length && positions.every((position) => (
+      Number.isFinite(position.x) &&
+      Number.isFinite(position.y) &&
+      position.x >= 0 && position.x <= 1 &&
+      position.y >= 0 && position.y <= 1
+    ));
+    const sizes = state.v >= 3 && Array.isArray(state.s)
+      ? state.s.slice(0, records.length).map(Number)
+      : [];
+    const hasValidSizes = sizes.length >= tracks.length && sizes.every((size) => (
+      Number.isFinite(size) && size >= MIN_ALBUM_SCALE && size <= MAX_ALBUM_SCALE
+    ));
+
     return {
       layout: state.l,
       playlistName: String(state.p || "分享歌单").slice(0, 160),
       tracks,
+      positions: hasValidPositions ? positions : [],
+      sizes: hasValidSizes ? sizes : [],
     };
   } catch {
     return null;
@@ -551,28 +1138,26 @@ function drawShareImage(images, layout) {
   const context = canvas.getContext("2d", { alpha: false });
   drawShareWallBackground(context, width, height);
 
-  const gap = 38;
-  const availableWidth = width - 300;
-  const availableHeight = height - 230;
-  const panelSize = Math.min(
-    (availableWidth - gap * (layout.columns - 1)) / layout.columns,
-    (availableHeight - gap * (layout.rows - 1)) / layout.rows,
-  );
-  const gridWidth = panelSize * layout.columns + gap * (layout.columns - 1);
-  const gridHeight = panelSize * layout.rows + gap * (layout.rows - 1);
-  const originX = (width - gridWidth) / 2;
-  const originY = (height - gridHeight) / 2;
-
+  const sourceWidth = stage.clientWidth || width;
+  const sourceHeight = stage.clientHeight || height;
+  const viewportScale = Math.min(width / sourceWidth, height / sourceHeight);
+  const viewportWidth = sourceWidth * viewportScale;
+  const viewportHeight = sourceHeight * viewportScale;
+  const originX = (width - viewportWidth) / 2;
+  const originY = (height - viewportHeight) / 2;
   images.forEach((image, index) => {
-    const column = index % layout.columns;
-    const row = Math.floor(index / layout.columns);
-    if (row >= layout.rows) return;
+    if (index >= layout.visible) return;
     const variation = mountVariations[index] || mountVariations[0];
+    const position = albumPositions[index] || { x: 0.5, y: 0.5 };
+    const sourcePanelSize = PANEL_SIZE * sceneScale * getAlbumScale(index);
+    const panelSize = sourcePanelSize * viewportScale;
+    const maxSourceX = Math.max(0, sourceWidth - sourcePanelSize);
+    const maxSourceY = Math.max(0, sourceHeight - sourcePanelSize);
     drawSharePanel(
       context,
       image,
-      originX + column * (panelSize + gap) + variation.x,
-      originY + row * (panelSize + gap) + variation.y,
+      originX + position.x * maxSourceX * viewportScale + variation.x,
+      originY + position.y * maxSourceY * viewportScale + variation.y,
       panelSize,
       variation,
     );
@@ -759,6 +1344,7 @@ document.querySelectorAll(".layout-option").forEach((button) => {
 });
 
 importButton.addEventListener("click", openImportDialog);
+resetPositionsButton.addEventListener("click", resetAlbumPositions);
 shareButton.addEventListener("click", copyShareLink);
 shareImageButton.addEventListener("click", openShareImageDialog);
 document.querySelector("#closePlaylistDialog").addEventListener("click", closeImportDialog);
@@ -777,7 +1363,15 @@ shareImageDialog.addEventListener("click", (event) => {
   if (event.target === shareImageDialog) closeShareImageDialog();
 });
 
-grid.addEventListener("pointermove", updateReflectionFromPointer);
+grid.addEventListener("pointerdown", startAlbumResize);
+grid.addEventListener("pointerdown", startAlbumDrag);
+grid.addEventListener("pointermove", moveAlbum);
+grid.addEventListener("pointerup", finishAlbumResize);
+grid.addEventListener("pointerup", finishAlbumDrag);
+grid.addEventListener("pointercancel", finishAlbumResize);
+grid.addEventListener("pointercancel", finishAlbumDrag);
+grid.addEventListener("keydown", resizeAlbumWithKeyboard);
+grid.addEventListener("keydown", moveAlbumWithKeyboard);
 grid.addEventListener("pointerleave", resetReflection);
 window.addEventListener("resize", scheduleSceneFit, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleSceneFit, { passive: true });
@@ -789,6 +1383,11 @@ const sharedState = readShareState();
 if (sharedState) {
   importedCovers = sharedState.tracks;
   importedPlaylistName = sharedState.playlistName;
+  albumPositions = sharedState.positions;
+  albumSizes = sharedState.sizes.length
+    ? records.map((_, index) => sharedState.sizes[index] || 1)
+    : records.map(() => 1);
+  positionLayout = sharedState.positions.length ? sharedState.layout : "";
   importButton.querySelector("span").textContent = "重新导入";
   importButton.title = `当前墙面来自分享链接：《${importedPlaylistName}》`;
 }
