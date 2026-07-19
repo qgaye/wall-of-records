@@ -402,7 +402,7 @@ async function copyShareLink() {
     shareButton.title = shareUrl;
     shareFeedbackTimer = window.setTimeout(() => {
       shareButton.dataset.state = "";
-      shareButton.querySelector("span").textContent = "复制分享";
+      shareButton.querySelector("span").textContent = "分享链接";
       shareButton.title = "复制可复原当前墙面的分享链接";
     }, 1800);
   } catch {

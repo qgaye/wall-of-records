@@ -8,8 +8,10 @@ const PORT = Number(process.env.RECORD_WALL_PORT) || 8000;
 const ROOT = __dirname;
 const MAX_BODY_SIZE = 16 * 1024;
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+const LOG_READ_CHUNK_SIZE = 64 * 1024;
 const IMPORT_LOG_FILE =
   process.env.RECORD_WALL_IMPORT_LOG || path.join(ROOT, "logs", "playlist-imports.jsonl");
+let importLogWriteQueue = Promise.resolve();
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -33,16 +35,131 @@ async function appendImportLog({ platform, playlist, result }) {
     playlist: {
       id: playlist?.id ? String(playlist.id) : null,
       name: playlist?.name || null,
+      url: playlist?.url || null,
     },
     platform,
     result,
   };
 
+  importLogWriteQueue = importLogWriteQueue.then(async () => {
+    try {
+      await fs.mkdir(path.dirname(IMPORT_LOG_FILE), { recursive: true });
+      await fs.appendFile(IMPORT_LOG_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+    } catch (error) {
+      console.error(`无法写入歌单解析日志：${error.message}`);
+    }
+  });
+  await importLogWriteQueue;
+}
+
+function positiveInteger(value, fallback, maximum) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) return fallback;
+  return Math.min(number, maximum);
+}
+
+function parseImportLogLine(buffer) {
+  const text = buffer.toString("utf8").trim();
+  if (!text) return null;
+
   try {
-    await fs.mkdir(path.dirname(IMPORT_LOG_FILE), { recursive: true });
-    await fs.appendFile(IMPORT_LOG_FILE, `${JSON.stringify(entry)}\n`, "utf8");
+    const entry = JSON.parse(text);
+    return entry && typeof entry === "object" ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readImportLogPage(page, pageSize) {
+  let fileHandle;
+  try {
+    fileHandle = await fs.open(IMPORT_LOG_FILE, "r");
   } catch (error) {
-    console.error(`无法写入歌单解析日志：${error.message}`);
+    if (error.code === "ENOENT") {
+      return { entries: [], hasMore: false, scannedBytes: 0, fileSize: 0 };
+    }
+    throw error;
+  }
+
+  try {
+    const { size: fileSize } = await fileHandle.stat();
+    const entries = [];
+    const entriesToSkip = (page - 1) * pageSize;
+    let validEntriesSeen = 0;
+    let position = fileSize;
+    let remainder = Buffer.alloc(0);
+    let hasMore = false;
+    let scannedBytes = 0;
+    let done = false;
+
+    const consumeLine = (lineBuffer) => {
+      const entry = parseImportLogLine(lineBuffer);
+      if (!entry) return;
+
+      if (validEntriesSeen < entriesToSkip) {
+        validEntriesSeen += 1;
+        return;
+      }
+      if (entries.length < pageSize) {
+        entries.push(entry);
+        validEntriesSeen += 1;
+        return;
+      }
+
+      hasMore = true;
+      done = true;
+    };
+
+    while (position > 0 && !done) {
+      const readLength = Math.min(LOG_READ_CHUNK_SIZE, position);
+      position -= readLength;
+      const chunk = Buffer.allocUnsafe(readLength);
+      const { bytesRead } = await fileHandle.read(chunk, 0, readLength, position);
+      scannedBytes += bytesRead;
+      const bytes = chunk.subarray(0, bytesRead);
+      const combined = remainder.length ? Buffer.concat([bytes, remainder]) : bytes;
+      let lineEnd = combined.length;
+
+      for (let index = combined.length - 1; index >= 0 && !done; index -= 1) {
+        if (combined[index] !== 0x0a) continue;
+        consumeLine(combined.subarray(index + 1, lineEnd));
+        lineEnd = index;
+      }
+
+      remainder = done ? Buffer.alloc(0) : Buffer.from(combined.subarray(0, lineEnd));
+    }
+
+    if (!done && position === 0 && remainder.length) {
+      consumeLine(remainder);
+    }
+
+    return { entries, hasMore, scannedBytes, fileSize };
+  } finally {
+    await fileHandle.close();
+  }
+}
+
+async function handleManageLogsApi(request, response) {
+  if (request.method !== "GET") {
+    writeJson(response, 405, { error: "请使用 GET 请求" });
+    return;
+  }
+
+  try {
+    const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    const page = positiveInteger(requestUrl.searchParams.get("page"), 1, 1_000_000);
+    const pageSize = positiveInteger(requestUrl.searchParams.get("pageSize"), 20, 100);
+    const { entries, hasMore } = await readImportLogPage(page, pageSize);
+
+    writeJson(response, 200, {
+      page,
+      pageSize,
+      hasPrevious: page > 1,
+      hasMore,
+      entries,
+    });
+  } catch (error) {
+    writeJson(response, 500, { error: error.message || "日志读取失败" });
   }
 }
 
@@ -438,10 +555,11 @@ async function handleNeteasePlaylistApi(request, response) {
     return;
   }
 
-  let playlistReference = { id: null, name: null };
+  let playlistReference = { id: null, name: null, url: null };
 
   try {
     const body = await readJsonBody(request);
+    playlistReference.url = typeof body.url === "string" ? body.url.trim() : null;
     playlistReference.id = directPlaylistId(body.url);
     const requestedLimit = Number(body.limit);
     const limit = Number.isInteger(requestedLimit)
@@ -452,7 +570,11 @@ async function handleNeteasePlaylistApi(request, response) {
 
     const playlistPayload = await fetchPlaylistPayload(playlistId);
     const playlist = normalizeTracks(playlistPayload);
-    playlistReference = { id: playlist.id || playlistId, name: playlist.name };
+    playlistReference = {
+      id: playlist.id || playlistId,
+      name: playlist.name,
+      url: playlistReference.url,
+    };
     const allTrackIds = neteaseTrackIds(playlistPayload);
     if (!allTrackIds.length) {
       throw new Error(
@@ -510,10 +632,11 @@ async function handleQQPlaylistApi(request, response) {
     return;
   }
 
-  let playlistReference = { id: null, name: null };
+  let playlistReference = { id: null, name: null, url: null };
 
   try {
     const body = await readJsonBody(request);
+    playlistReference.url = typeof body.url === "string" ? body.url.trim() : null;
     playlistReference.id = directPlaylistId(body.url);
     const requestedLimit = Number(body.limit);
     const limit = Number.isInteger(requestedLimit)
@@ -522,7 +645,11 @@ async function handleQQPlaylistApi(request, response) {
     const { playlistId, encodedHostUin } = resolveQQPlaylist(body.url);
     playlistReference.id = playlistId;
     const playlist = normalizeQQTracks(await fetchQQPlaylist(playlistId, encodedHostUin));
-    playlistReference = { id: playlist.id || playlistId, name: playlist.name };
+    playlistReference = {
+      id: playlist.id || playlistId,
+      name: playlist.name,
+      url: playlistReference.url,
+    };
 
     if (!playlist.tracks.length) {
       throw new Error(
@@ -621,7 +748,12 @@ async function serveStatic(request, response) {
     response.end("Not found");
     return;
   }
-  const relativePath = pathname === "/" || pathname === "/share" ? "index.html" : pathname.replace(/^\/+/, "");
+  const relativePath =
+    pathname === "/" || pathname === "/share"
+      ? "index.html"
+      : pathname === "/manage"
+        ? "manage.html"
+        : pathname.replace(/^\/+/, "");
   const filePath = path.resolve(ROOT, relativePath);
 
   if (filePath !== ROOT && !filePath.startsWith(`${ROOT}${path.sep}`)) {
@@ -661,8 +793,19 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
+  if (pathname === "/api/manage/logs") {
+    await handleManageLogsApi(request, response);
+    return;
+  }
+
   if (pathname === "/share/") {
     response.writeHead(308, { Location: "/share" });
+    response.end();
+    return;
+  }
+
+  if (pathname === "/manage/") {
+    response.writeHead(308, { Location: "/manage" });
     response.end();
     return;
   }
@@ -686,11 +829,13 @@ module.exports = {
   fetchNeteaseSongDetails,
   fetchPlaylistPayload,
   handleCoverProxy,
+  handleManageLogsApi,
   isAllowedCoverHost,
   normalizeTracks,
   neteaseTrackIds,
   randomSample,
   randomTracks,
+  readImportLogPage,
   resolveSharedPlaylistId,
   server,
   uniqueTracksByCover,

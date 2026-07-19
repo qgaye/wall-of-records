@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="description" content="Record Wall 歌单解析日志看板。" />
+    <title>Import Ledger · Record Wall</title>
+    <link rel="stylesheet" href="./manage.css" />
+  </head>
+  <body>
+    <main class="ledger-shell">
+      <header class="ledger-header">
+        <div>
+          <span class="eyebrow">RECORD WALL / IMPORT LEDGER</span>
+          <h1>解析日志</h1>
+          <p>网易云音乐与 QQ 音乐歌单导入记录，按最新执行时间倒序排列。</p>
+        </div>
+        <div class="route-stamp" aria-label="当前路由">
+          <span>DIRECT ROUTE</span>
+          <strong>/manage</strong>
+        </div>
+      </header>
+
+      <section class="ledger-panel" id="ledgerPanel" aria-busy="true">
+        <div class="ledger-toolbar">
+          <div class="ledger-pulse">
+            <i aria-hidden="true"></i>
+            <span id="ledgerSummary">正在读取日志</span>
+          </div>
+          <div class="toolbar-actions">
+            <label for="pageSize">
+              每页
+              <select id="pageSize">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button class="refresh-button" id="refreshLogs" type="button">刷新</button>
+          </div>
+        </div>
+
+        <div class="ledger-columns" aria-hidden="true">
+          <span>执行时间</span>
+          <span>歌单</span>
+          <span>平台</span>
+          <span>执行结果</span>
+        </div>
+
+        <div class="ledger-rows" id="ledgerRows" aria-live="polite"></div>
+
+        <footer class="ledger-pagination">
+          <button id="previousPage" type="button">上一页</button>
+          <span id="pageLabel">第 1 页</span>
+          <button id="nextPage" type="button">下一页</button>
+        </footer>
+      </section>
+    </main>
+
+    <script src="./manage.js"></script>
+  </body>
+</html>
