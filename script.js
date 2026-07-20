@@ -6,6 +6,16 @@ const MIN_ALBUM_SCALE = 0.45;
 const MAX_ALBUM_SCALE = 1.8;
 const ALIGN_SNAP_THRESHOLD = 12;
 const ALIGN_SNAP_RELEASE_THRESHOLD = 20;
+const GAP_SNAP_THRESHOLD = 18;
+const GAP_SNAP_RELEASE_THRESHOLD = 28;
+const DEFAULT_FRAME_TYPE = "acrylic";
+const FRAME_TYPES = {
+  acrylic: { label: "亚克力板", inset: 0.13 },
+  mat: { label: "黑色卡纸框", inset: 0.22 },
+  shadowbox: { label: "黑色深框", inset: 0.17 },
+  colorbox: { label: "彩色盒框", inset: 0.2 },
+};
+const COLOR_FRAME_ACCENTS = ["#a9433f", "#c69518", "#426f8f", "#8b5946", "#65704b", "#8c5570"];
 
 const records = [
   {
@@ -117,6 +127,8 @@ const template = document.querySelector("#recordTemplate");
 const alignmentGuides = document.querySelector("#alignmentGuides");
 const verticalGuide = alignmentGuides.querySelector(".alignment-guide--vertical");
 const horizontalGuide = alignmentGuides.querySelector(".alignment-guide--horizontal");
+const horizontalSpacingGuide = alignmentGuides.querySelector(".spacing-guide--horizontal");
+const verticalSpacingGuide = alignmentGuides.querySelector(".spacing-guide--vertical");
 const playlistDialog = document.querySelector("#playlistDialog");
 const playlistForm = document.querySelector("#playlistImportForm");
 const playlistUrl = document.querySelector("#playlistUrl");
@@ -135,6 +147,12 @@ const shareImageDialog = document.querySelector("#shareImageDialog");
 const shareImageStage = document.querySelector("#shareImageStage");
 const shareImagePreview = document.querySelector("#shareImagePreview");
 const shareImageStatus = document.querySelector("#shareImageStatus");
+const moduleConfig = document.querySelector("#moduleConfig");
+const moduleConfigIndex = document.querySelector("#moduleConfigIndex");
+const moduleConfigTitle = document.querySelector("#moduleConfigTitle");
+const moduleConfigMeta = document.querySelector("#moduleConfigMeta");
+const closeModuleConfigButton = document.querySelector("#closeModuleConfig");
+const frameTypeOptions = [...moduleConfig.querySelectorAll('input[name="albumFrameType"]')];
 
 let fitFrame;
 let importedCovers = [];
@@ -146,6 +164,7 @@ let shareImageGeneration = 0;
 let sceneScale = 1;
 let albumPositions = [];
 let albumSizes = records.map(() => 1);
+let albumFrameTypes = records.map(() => DEFAULT_FRAME_TYPE);
 let positionLayout = "";
 let activeDrag;
 let activeResize;
@@ -153,6 +172,7 @@ let topStackOrder = records.length;
 let canvasMetrics;
 let pointerFrame;
 let pendingPointer;
+let configuredAlbumIndex;
 
 const playlistPlatforms = {
   netease: {
@@ -220,6 +240,8 @@ function renderRecords() {
     item.style.setProperty("--mount-y", `${variation.y}px`);
     item.style.setProperty("--mount-rotate", `${variation.rotate}deg`);
     item.dataset.index = String(index);
+    item.dataset.frame = getAlbumFrameType(index);
+    item.style.setProperty("--frame-accent", COLOR_FRAME_ACCENTS[index % COLOR_FRAME_ACCENTS.length]);
     item.tabIndex = 0;
     item.setAttribute("role", "group");
     item.setAttribute("aria-label", accessibleName);
@@ -227,7 +249,7 @@ function renderRecords() {
     item.setAttribute("aria-roledescription", "可拖动专辑");
     item.setAttribute("aria-grabbed", "false");
     item.style.zIndex = String(index + 1);
-    frame.setAttribute("aria-label", accessibleName);
+    frame.setAttribute("aria-label", `${accessibleName}，${FRAME_TYPES[getAlbumFrameType(index)].label}`);
     resizeHandles.forEach((handle) => {
       const cornerNames = { tl: "左上角", tr: "右上角", bl: "左下角", br: "右下角" };
       handle.setAttribute("aria-label", `从${cornerNames[handle.dataset.corner]}调整 ${accessibleName} 的大小`);
@@ -242,6 +264,87 @@ function renderRecords() {
 
     grid.append(fragment);
   });
+
+  syncModuleConfigurator();
+}
+
+function getAlbumFrameType(index) {
+  const value = albumFrameTypes[index];
+  return FRAME_TYPES[value] ? value : DEFAULT_FRAME_TYPE;
+}
+
+function setAlbumFrameType(item, index, value) {
+  const frameType = FRAME_TYPES[value] ? value : DEFAULT_FRAME_TYPE;
+  albumFrameTypes[index] = frameType;
+  item.dataset.frame = frameType;
+  item.querySelector(".acrylic-frame").setAttribute(
+    "aria-label",
+    `${item.getAttribute("aria-label")}，${FRAME_TYPES[frameType].label}`,
+  );
+  if (configuredAlbumIndex === index) {
+    frameTypeOptions.forEach((option) => {
+      option.checked = option.value === frameType;
+    });
+    moduleConfigMeta.textContent = getAlbumConfigCopy(index).meta;
+  }
+}
+
+function changeAlbumFrame(event) {
+  const option = event.target.closest('input[name="albumFrameType"]');
+  if (!option || configuredAlbumIndex === undefined) return;
+  const item = grid.querySelector(`.record-item[data-index="${configuredAlbumIndex}"]`);
+  if (!item) return;
+  setAlbumFrameType(item, configuredAlbumIndex, option.value);
+  bringItemToFront(item);
+  document.body.dataset.canvasInteracted = "true";
+}
+
+function getAlbumConfigCopy(index) {
+  const imported = importedCovers[index];
+  const record = records[index];
+  return imported
+    ? { title: imported.album || imported.name, meta: `${imported.artist} · ${imported.name}` }
+    : { title: record.name, meta: `${record.year} · ${FRAME_TYPES[getAlbumFrameType(index)].label}` };
+}
+
+function syncModuleConfigurator({ focus = false } = {}) {
+  grid.querySelectorAll(".record-item.is-configured").forEach((item) => item.classList.remove("is-configured"));
+  if (configuredAlbumIndex === undefined) return;
+  const item = grid.querySelector(`.record-item[data-index="${configuredAlbumIndex}"]`);
+  if (!item || item.hidden) {
+    closeModuleConfigurator();
+    return;
+  }
+
+  const copy = getAlbumConfigCopy(configuredAlbumIndex);
+  moduleConfigIndex.textContent = `MODULE ${String(configuredAlbumIndex + 1).padStart(2, "0")}`;
+  moduleConfigTitle.textContent = copy.title;
+  moduleConfigMeta.textContent = copy.meta;
+  frameTypeOptions.forEach((option) => {
+    option.checked = option.value === getAlbumFrameType(configuredAlbumIndex);
+  });
+  item.classList.add("is-configured");
+  moduleConfig.classList.add("is-open");
+  moduleConfig.removeAttribute("inert");
+  moduleConfig.setAttribute("aria-hidden", "false");
+  document.body.dataset.configOpen = "true";
+  if (focus) closeModuleConfigButton.focus({ preventScroll: true });
+}
+
+function openModuleConfigurator(item, options) {
+  if (!item || item.hidden) return;
+  configuredAlbumIndex = Number(item.dataset.index);
+  bringItemToFront(item);
+  syncModuleConfigurator(options);
+}
+
+function closeModuleConfigurator() {
+  grid.querySelector(".record-item.is-configured")?.classList.remove("is-configured");
+  configuredAlbumIndex = undefined;
+  moduleConfig.classList.remove("is-open");
+  moduleConfig.setAttribute("inert", "");
+  moduleConfig.setAttribute("aria-hidden", "true");
+  delete document.body.dataset.configOpen;
 }
 
 function getCanvasMetrics(layout) {
@@ -376,6 +479,7 @@ function applyLayout(layoutName) {
   grid.querySelectorAll(".record-item").forEach((item, index) => {
     item.hidden = index >= layout.visible;
   });
+  syncModuleConfigurator();
 
   document.querySelectorAll(".layout-option").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.layout === layoutName));
@@ -431,6 +535,9 @@ function startAlbumDrag(event) {
     offsetY: event.clientY - metrics.top - y,
     lastClientX: event.clientX,
     lastClientY: event.clientY,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    didMove: false,
     size: getAlbumPanelSize(Number(item.dataset.index), metrics),
     targets: collectAlignmentTargets(Number(item.dataset.index), metrics),
     snapCandidates: {},
@@ -438,6 +545,7 @@ function startAlbumDrag(event) {
 
   hideAlignmentGuides();
   bringItemToFront(item);
+  item.focus({ preventScroll: true });
   grid.classList.add("is-dragging");
   item.classList.add("is-dragging");
   item.setAttribute("aria-grabbed", "true");
@@ -453,10 +561,30 @@ function getCornerDirections(corner) {
   };
 }
 
+function rangesOverlap(startA, endA, startB, endB, minimum = 0) {
+  return Math.min(endA, endB) - Math.max(startA, startB) >= minimum;
+}
+
+function rectanglesOverlap(first, second, inset = 0.5) {
+  return (
+    first.left < second.right - inset &&
+    first.right > second.left + inset &&
+    first.top < second.bottom - inset &&
+    first.bottom > second.top + inset
+  );
+}
+
+function uniqueNumbers(values) {
+  return [...new Set(values.map((value) => Number(value.toFixed(2))))];
+}
+
 function collectAlignmentTargets(activeIndex, metrics) {
   const targets = {
     x: [0, metrics.width / 2, metrics.width],
     y: [0, metrics.height / 2, metrics.height],
+    rects: [],
+    gaps: { x: [], y: [] },
+    gapSources: { x: [], y: [] },
   };
 
   grid.querySelectorAll(".record-item:not([hidden])").forEach((item) => {
@@ -467,15 +595,138 @@ function collectAlignmentTargets(activeIndex, metrics) {
     const top = item.canvasY || 0;
     targets.x.push(left, left + size / 2, left + size);
     targets.y.push(top, top + size / 2, top + size);
+    targets.rects.push({ index, left, top, right: left + size, bottom: top + size, size });
+  });
+
+  targets.rects.forEach((first, firstIndex) => {
+    targets.rects.slice(firstIndex + 1).forEach((second) => {
+      const minimumOverlap = Math.min(first.size, second.size) * 0.25;
+      if (rangesOverlap(first.top, first.bottom, second.top, second.bottom, minimumOverlap)) {
+        const [left, right] = first.left <= second.left ? [first, second] : [second, first];
+        const gap = right.left - left.right;
+        if (gap >= 4 && gap <= Math.min(first.size, second.size) * 0.75) {
+          targets.gaps.x.push(gap);
+          targets.gapSources.x.push({
+            gap,
+            start: left.right,
+            end: right.left,
+            cross: Math.min(left.top, right.top) - 7,
+          });
+        }
+      }
+      if (rangesOverlap(first.left, first.right, second.left, second.right, minimumOverlap)) {
+        const [top, bottom] = first.top <= second.top ? [first, second] : [second, first];
+        const gap = bottom.top - top.bottom;
+        if (gap >= 4 && gap <= Math.min(first.size, second.size) * 0.75) {
+          targets.gaps.y.push(gap);
+          targets.gapSources.y.push({
+            gap,
+            start: top.bottom,
+            end: bottom.top,
+            cross: Math.min(top.left, bottom.left) - 7,
+          });
+        }
+      }
+    });
   });
 
   return {
-    x: [...new Set(targets.x.map((value) => Number(value.toFixed(2))))],
-    y: [...new Set(targets.y.map((value) => Number(value.toFixed(2))))],
+    x: uniqueNumbers(targets.x),
+    y: uniqueNumbers(targets.y),
+    rects: targets.rects,
+    gaps: {
+      x: uniqueNumbers(targets.gaps.x),
+      y: uniqueNumbers(targets.gaps.y),
+    },
+    gapSources: targets.gapSources,
   };
 }
 
-function findMoveSnap(axis, rawPosition) {
+function getMoveCandidateRect(axis, position, perpendicularPosition, size) {
+  const left = axis === "x" ? position : perpendicularPosition;
+  const top = axis === "y" ? position : perpendicularPosition;
+  return { left, top, right: left + size, bottom: top + size };
+}
+
+function snapCandidateScore(candidate) {
+  return candidate.distance + (candidate.kind === "gap" ? 0.45 : 0) + (candidate.priority || 0) * 0.12;
+}
+
+function addMoveGapCandidates(axis, rawPosition, perpendicularPosition, maxPosition, candidates) {
+  const drag = activeDrag;
+  if (!drag || !drag.targets.rects.length) return;
+  const isX = axis === "x";
+  const perpendicularStart = perpendicularPosition;
+  const perpendicularEnd = perpendicularStart + drag.size;
+  const relevantRects = drag.targets.rects.filter((rect) => {
+    const start = isX ? rect.top : rect.left;
+    const end = isX ? rect.bottom : rect.right;
+    return rangesOverlap(perpendicularStart, perpendicularEnd, start, end, Math.min(drag.size, rect.size) * 0.25);
+  });
+  const startKey = isX ? "left" : "top";
+  const endKey = isX ? "right" : "bottom";
+
+  const addCandidate = (position, facingEdge, neighborEdge, gap, source, spacingSegments) => {
+    const distance = Math.abs(position - rawPosition);
+    if (position < 0 || position > maxPosition || distance > GAP_SNAP_THRESHOLD) return;
+    const proposedRect = getMoveCandidateRect(axis, position, perpendicularPosition, drag.size);
+    if (drag.targets.rects.some((rect) => rectanglesOverlap(proposedRect, rect))) return;
+    candidates.push({
+      axis,
+      target: facingEdge,
+      secondaryTarget: neighborEdge,
+      position,
+      distance,
+      priority: 2,
+      subject: "equalGap",
+      kind: "gap",
+      gap,
+      source,
+      spacingSegments,
+    });
+  };
+
+  relevantRects.forEach((neighbor) => {
+    drag.targets.gaps[axis].forEach((gap) => {
+      const sourceSegment = drag.targets.gapSources?.[axis]?.find((source) => Math.abs(source.gap - gap) <= 0.02);
+      const afterPosition = neighbor[endKey] + gap;
+      const afterCross = isX
+        ? Math.min(perpendicularPosition, neighbor.top) - 7
+        : Math.min(perpendicularPosition, neighbor.left) - 7;
+      addCandidate(afterPosition, afterPosition, neighbor[endKey], gap, "matched", [
+        sourceSegment,
+        { start: neighbor[endKey], end: afterPosition, cross: afterCross },
+      ].filter(Boolean));
+
+      const beforePosition = neighbor[startKey] - gap - drag.size;
+      const beforeCross = isX
+        ? Math.min(perpendicularPosition, neighbor.top) - 7
+        : Math.min(perpendicularPosition, neighbor.left) - 7;
+      addCandidate(beforePosition, beforePosition + drag.size, neighbor[startKey], gap, "matched", [
+        sourceSegment,
+        { start: beforePosition + drag.size, end: neighbor[startKey], cross: beforeCross },
+      ].filter(Boolean));
+    });
+  });
+
+  const sortedRects = [...relevantRects].sort((first, second) => first[startKey] - second[startKey]);
+  sortedRects.slice(0, -1).forEach((before, beforeIndex) => {
+    const after = sortedRects[beforeIndex + 1];
+    const availableSpace = after[startKey] - before[endKey];
+    const gap = (availableSpace - drag.size) / 2;
+    if (gap < 4) return;
+    const position = before[endKey] + gap;
+    const cross = isX
+      ? Math.min(perpendicularPosition, before.top, after.top) - 7
+      : Math.min(perpendicularPosition, before.left, after.left) - 7;
+    addCandidate(position, position, before[endKey], gap, "distributed", [
+      { start: before[endKey], end: position, cross },
+      { start: position + drag.size, end: after[startKey], cross },
+    ]);
+  });
+}
+
+function findMoveSnap(axis, rawPosition, perpendicularPosition) {
   const drag = activeDrag;
   if (!drag) return undefined;
 
@@ -491,7 +742,8 @@ function findMoveSnap(axis, rawPosition) {
   const retained = drag.snapCandidates[axis];
   if (retained) {
     const retainedDistance = Math.abs(retained.position - rawPosition);
-    if (retainedDistance <= ALIGN_SNAP_RELEASE_THRESHOLD) {
+    const releaseThreshold = retained.kind === "gap" ? GAP_SNAP_RELEASE_THRESHOLD : ALIGN_SNAP_RELEASE_THRESHOLD;
+    if (retainedDistance <= releaseThreshold) {
       candidates.push({ ...retained, distance: retainedDistance, retained: true });
     }
   }
@@ -506,19 +758,37 @@ function findMoveSnap(axis, rawPosition) {
     });
   });
 
-  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  addMoveGapCandidates(axis, rawPosition, perpendicularPosition, maxPosition, candidates);
+
+  candidates.sort((a, b) => snapCandidateScore(a) - snapCandidateScore(b) || a.distance - b.distance);
   drag.snapCandidates[axis] = candidates[0];
   return drag.snapCandidates[axis];
+}
+
+function updateSpacingGuide(guide, snap) {
+  const segments = snap?.kind === "gap" ? snap.spacingSegments?.slice(0, 2) || [] : [];
+  [segments[0], segments[1]].forEach((segment, index) => {
+    const number = index === 0 ? "one" : "two";
+    const start = segment?.start ?? 0;
+    const end = segment?.end ?? start;
+    guide.style.setProperty(`--segment-${number}-start`, `${start}px`);
+    guide.style.setProperty(`--segment-${number}-length`, `${Math.max(0, end - start)}px`);
+    guide.style.setProperty(`--segment-${number}-cross`, `${Math.max(4, segment?.cross ?? 0)}px`);
+  });
+  guide.classList.toggle("is-visible", segments.length > 0);
+  guide.classList.toggle("has-two-segments", segments.length > 1);
 }
 
 function showAlignmentFeedback({ xSnap, ySnap, item }) {
   const x = xSnap?.target;
   const y = ySnap?.target;
   const hasSnap = x !== undefined || y !== undefined;
-  verticalGuide.style.setProperty("--guide-position", `${x || 0}px`);
-  horizontalGuide.style.setProperty("--guide-position", `${y || 0}px`);
-  verticalGuide.classList.toggle("is-visible", x !== undefined);
-  horizontalGuide.classList.toggle("is-visible", y !== undefined);
+  verticalGuide.style.setProperty("--guide-position", `${x ?? 0}px`);
+  horizontalGuide.style.setProperty("--guide-position", `${y ?? 0}px`);
+  verticalGuide.classList.toggle("is-visible", x !== undefined && xSnap?.kind !== "gap");
+  horizontalGuide.classList.toggle("is-visible", y !== undefined && ySnap?.kind !== "gap");
+  updateSpacingGuide(horizontalSpacingGuide, xSnap);
+  updateSpacingGuide(verticalSpacingGuide, ySnap);
   item.classList.toggle("is-snapped", hasSnap);
 }
 
@@ -528,8 +798,8 @@ function moveAlbumFromPointer(pointer) {
   const maxY = Math.max(0, canvasMetrics.height - activeDrag.size);
   const rawX = Math.min(maxX, Math.max(0, pointer.clientX - canvasMetrics.left - activeDrag.offsetX));
   const rawY = Math.min(maxY, Math.max(0, pointer.clientY - canvasMetrics.top - activeDrag.offsetY));
-  const snapX = findMoveSnap("x", rawX);
-  const snapY = findMoveSnap("y", rawY);
+  const snapX = findMoveSnap("x", rawX, rawY);
+  const snapY = findMoveSnap("y", rawY, snapX?.position ?? rawX);
 
   setItemPosition(
     activeDrag.item,
@@ -547,6 +817,70 @@ function moveAlbumFromPointer(pointer) {
   });
 }
 
+function getResizeCandidateRect(size) {
+  const resize = activeResize;
+  if (!resize) return undefined;
+  const left = resize.xDirection === 1 ? resize.anchorX : resize.anchorX - size;
+  const top = resize.yDirection === 1 ? resize.anchorY : resize.anchorY - size;
+  return { left, top, right: left + size, bottom: top + size };
+}
+
+function buildResizeGapCandidates(axis, rawSize, threshold = GAP_SNAP_THRESHOLD) {
+  const resize = activeResize;
+  if (!resize) return [];
+  const isX = axis === "x";
+  const direction = isX ? resize.xDirection : resize.yDirection;
+  const anchor = isX ? resize.anchorX : resize.anchorY;
+  const startKey = isX ? "left" : "top";
+  const endKey = isX ? "right" : "bottom";
+  const candidates = [];
+
+  resize.targets.rects.forEach((neighbor) => {
+    const neighborEdge = direction === 1 ? neighbor[startKey] : neighbor[endKey];
+    const isOnMovingSide = direction === 1 ? neighbor[startKey] >= anchor : neighbor[endKey] <= anchor;
+    if (!isOnMovingSide) return;
+
+    resize.targets.gaps[axis].forEach((gap) => {
+      const size = direction === 1
+        ? neighborEdge - gap - anchor
+        : anchor - neighborEdge - gap;
+      const distance = Math.abs(size - rawSize);
+      if (size < resize.minSize || size > resize.maxSize || distance > threshold) return;
+
+      const proposedRect = getResizeCandidateRect(size);
+      const perpendicularOverlap = isX
+        ? rangesOverlap(proposedRect.top, proposedRect.bottom, neighbor.top, neighbor.bottom, Math.min(size, neighbor.size) * 0.25)
+        : rangesOverlap(proposedRect.left, proposedRect.right, neighbor.left, neighbor.right, Math.min(size, neighbor.size) * 0.25);
+      if (!perpendicularOverlap || resize.targets.rects.some((rect) => rectanglesOverlap(proposedRect, rect))) return;
+
+      const movingEdge = anchor + direction * size;
+      const currentSegment = {
+        start: Math.min(movingEdge, neighborEdge),
+        end: Math.max(movingEdge, neighborEdge),
+        cross: isX
+          ? Math.min(proposedRect.top, neighbor.top) - 7
+          : Math.min(proposedRect.left, neighbor.left) - 7,
+      };
+      const sourceSegment = resize.targets.gapSources?.[axis]?.find((source) => Math.abs(source.gap - gap) <= 0.02);
+
+      candidates.push({
+        axis,
+        target: movingEdge,
+        secondaryTarget: neighborEdge,
+        size,
+        distance,
+        priority: 2,
+        subject: "equalGap",
+        kind: "gap",
+        gap,
+        spacingSegments: [sourceSegment, currentSegment].filter(Boolean),
+      });
+    });
+  });
+
+  return candidates;
+}
+
 function findResizeSnap(rawSize) {
   const resize = activeResize;
   if (!resize) return { size: rawSize };
@@ -554,7 +888,10 @@ function findResizeSnap(rawSize) {
   if (resize.snapCandidate) {
     const divisor = resize.snapCandidate.priority === 1 ? 2 : 1;
     const retainedDistance = Math.abs(resize.snapCandidate.size - rawSize) / divisor;
-    if (retainedDistance <= ALIGN_SNAP_RELEASE_THRESHOLD) {
+    const releaseThreshold = resize.snapCandidate.kind === "gap"
+      ? GAP_SNAP_RELEASE_THRESHOLD
+      : ALIGN_SNAP_RELEASE_THRESHOLD;
+    if (retainedDistance <= releaseThreshold) {
       candidates.push({ ...resize.snapCandidate, distance: retainedDistance, retained: true });
     }
   }
@@ -581,7 +918,8 @@ function findResizeSnap(rawSize) {
 
   addCandidates("x", resize.anchorX, resize.xDirection);
   addCandidates("y", resize.anchorY, resize.yDirection);
-  candidates.sort((a, b) => a.distance - b.distance || a.priority - b.priority);
+  candidates.push(...buildResizeGapCandidates("x", rawSize), ...buildResizeGapCandidates("y", rawSize));
+  candidates.sort((a, b) => snapCandidateScore(a) - snapCandidateScore(b) || a.distance - b.distance);
   resize.snapCandidate = candidates[0];
   return resize.snapCandidate || { size: rawSize };
 }
@@ -610,15 +948,23 @@ function findGuideMatch(axis, size) {
   return match;
 }
 
+function findResizeGapMatch(axis, size) {
+  const candidates = buildResizeGapCandidates(axis, size, 0.8);
+  candidates.sort((a, b) => a.distance - b.distance);
+  return candidates[0];
+}
+
 function updateAlignmentGuides(size, snap) {
-  const xSnap = snap.axis === "x" ? snap : findGuideMatch("x", size);
-  const ySnap = snap.axis === "y" ? snap : findGuideMatch("y", size);
+  const xSnap = snap.axis === "x" ? snap : findGuideMatch("x", size) || findResizeGapMatch("x", size);
+  const ySnap = snap.axis === "y" ? snap : findGuideMatch("y", size) || findResizeGapMatch("y", size);
   showAlignmentFeedback({ xSnap, ySnap, item: activeResize.item });
 }
 
 function hideAlignmentGuides() {
   verticalGuide.classList.remove("is-visible");
   horizontalGuide.classList.remove("is-visible");
+  horizontalSpacingGuide.classList.remove("is-visible", "has-two-segments");
+  verticalSpacingGuide.classList.remove("is-visible", "has-two-segments");
   grid.querySelector(".record-item.is-snapped")?.classList.remove("is-snapped");
 }
 
@@ -712,6 +1058,9 @@ function moveAlbum(event) {
   if (activeDrag?.pointerId === event.pointerId) {
     activeDrag.lastClientX = event.clientX;
     activeDrag.lastClientY = event.clientY;
+    if (Math.hypot(event.clientX - activeDrag.startClientX, event.clientY - activeDrag.startClientY) > 4) {
+      activeDrag.didMove = true;
+    }
   }
   pendingPointer = {
     clientX: event.clientX,
@@ -728,7 +1077,7 @@ function finishAlbumDrag(event) {
   pointerFrame = undefined;
   pendingPointer = undefined;
 
-  const { item } = activeDrag;
+  const { item, didMove } = activeDrag;
   const cancelled = event.type === "pointercancel";
   if (!cancelled) moveAlbumFromPointer({ clientX: event.clientX, clientY: event.clientY });
   updateItemReflection(item, item.canvasX, item.canvasY);
@@ -739,6 +1088,7 @@ function finishAlbumDrag(event) {
   item.setAttribute("aria-grabbed", "false");
   if (item.hasPointerCapture(event.pointerId)) item.releasePointerCapture(event.pointerId);
   activeDrag = undefined;
+  if (!cancelled && !didMove) openModuleConfigurator(item);
 }
 
 function finishAlbumResize(event) {
@@ -826,15 +1176,26 @@ function moveAlbumWithKeyboard(event) {
   event.preventDefault();
 }
 
+function openModuleConfiguratorWithKeyboard(event) {
+  if (!["Enter", " "].includes(event.key) || event.target.closest(".resize-handle")) return;
+  const item = event.target.closest(".record-item");
+  if (!item) return;
+  openModuleConfigurator(item, { focus: true });
+  event.preventDefault();
+}
+
 function resetAlbumPositions() {
   const layout = layoutSettings[grid.dataset.layout];
   if (!layout) return;
   albumSizes = records.map(() => 1);
+  albumFrameTypes = records.map(() => DEFAULT_FRAME_TYPE);
   hideAlignmentGuides();
   fitSceneToViewport(layout, true);
   grid.querySelectorAll(".record-item").forEach((item, index) => {
     item.style.zIndex = String(index + 1);
+    setAlbumFrameType(item, index, DEFAULT_FRAME_TYPE);
   });
+  syncModuleConfigurator();
   topStackOrder = records.length;
   delete document.body.dataset.canvasInteracted;
 
@@ -876,7 +1237,7 @@ function isAllowedSharedCover(value) {
 function compactShareState() {
   const layout = layoutSettings[grid.dataset.layout || "4x2"];
   return {
-    v: 3,
+    v: 4,
     l: grid.dataset.layout || "4x2",
     p: importedPlaylistName,
     t: importedCovers.slice(0, records.length).map((track) => ({
@@ -890,6 +1251,7 @@ function compactShareState() {
       Number((position?.y || 0).toFixed(POSITION_PRECISION)),
     ]),
     s: albumSizes.slice(0, layout.visible).map((_, index) => Number(getAlbumScale(index).toFixed(3))),
+    f: albumFrameTypes.slice(0, layout.visible).map((_, index) => getAlbumFrameType(index)),
   };
 }
 
@@ -899,7 +1261,7 @@ function readShareState() {
 
   try {
     const state = decodeBase64Url(encoded);
-    if (![1, 2, 3].includes(state?.v) || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
+    if (![1, 2, 3, 4].includes(state?.v) || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
 
     const tracks = state.t.slice(0, records.length).map((track) => ({
       name: String(track?.n || "未命名歌曲").slice(0, 160),
@@ -927,6 +1289,10 @@ function readShareState() {
     const hasValidSizes = sizes.length >= tracks.length && sizes.every((size) => (
       Number.isFinite(size) && size >= MIN_ALBUM_SCALE && size <= MAX_ALBUM_SCALE
     ));
+    const frameTypes = state.v >= 4 && Array.isArray(state.f)
+      ? state.f.slice(0, records.length).map(String)
+      : [];
+    const hasValidFrameTypes = frameTypes.length >= tracks.length && frameTypes.every((frameType) => FRAME_TYPES[frameType]);
 
     return {
       layout: state.l,
@@ -934,6 +1300,7 @@ function readShareState() {
       tracks,
       positions: hasValidPositions ? positions : [],
       sizes: hasValidSizes ? sizes : [],
+      frameTypes: hasValidFrameTypes ? frameTypes : [],
     };
   } catch {
     return null;
@@ -1066,11 +1433,104 @@ function drawShareScrew(context, x, y, radius) {
   context.stroke();
 }
 
-function drawSharePanel(context, image, x, y, size, variation) {
+function drawShareCover(context, image, inset, size) {
+  const coverSize = size - inset * 2;
+  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+  const sourceX = (image.naturalWidth - sourceSize) / 2;
+  const sourceY = (image.naturalHeight - sourceSize) / 2;
+  context.shadowColor = "rgba(27, 25, 21, .22)";
+  context.shadowBlur = size * 0.036;
+  context.shadowOffsetY = size * 0.018;
+  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, inset, inset, coverSize, coverSize);
+  context.shadowColor = "transparent";
+  context.fillStyle = "rgba(255, 239, 203, .045)";
+  context.fillRect(inset, inset, coverSize, coverSize);
+}
+
+function drawShareGlass(context, size, opacity = 0.12) {
+  context.save();
+  roundedRectPath(context, 0, 0, size, size, size * 0.012);
+  context.clip();
+  const reflection = context.createLinearGradient(size * 0.06, size * 0.8, size * 0.92, size * 0.08);
+  reflection.addColorStop(0, "rgba(255, 255, 255, 0)");
+  reflection.addColorStop(0.43, "rgba(255, 255, 255, 0)");
+  reflection.addColorStop(0.49, `rgba(255, 255, 255, ${opacity})`);
+  reflection.addColorStop(0.54, `rgba(255, 255, 255, ${opacity * 0.2})`);
+  reflection.addColorStop(0.61, "rgba(255, 255, 255, 0)");
+  context.fillStyle = reflection;
+  context.fillRect(0, 0, size, size);
+  context.restore();
+}
+
+function drawShareMaterialFrame(context, image, size, frameType, index) {
+  const inset = size * FRAME_TYPES[frameType].inset;
+  const accent = COLOR_FRAME_ACCENTS[index % COLOR_FRAME_ACCENTS.length];
+
+  roundedRectPath(context, 0, 0, size, size, size * 0.012);
+  context.shadowColor = "rgba(41, 36, 29, .28)";
+  context.shadowBlur = size * 0.075;
+  context.shadowOffsetX = size * 0.026;
+  context.shadowOffsetY = size * 0.064;
+
+  if (frameType === "mat") {
+    context.fillStyle = "#191917";
+    context.fill();
+    context.shadowColor = "transparent";
+    const matInset = size * 0.052;
+    context.fillStyle = "#e9e5dc";
+    context.fillRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
+    context.strokeStyle = "rgba(60, 56, 49, .18)";
+    context.lineWidth = Math.max(1, size * 0.004);
+    context.strokeRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
+  } else if (frameType === "shadowbox") {
+    const blackFrame = context.createLinearGradient(0, 0, size, size);
+    blackFrame.addColorStop(0, "#373631");
+    blackFrame.addColorStop(0.24, "#11110f");
+    blackFrame.addColorStop(0.72, "#20201d");
+    blackFrame.addColorStop(1, "#080807");
+    context.fillStyle = blackFrame;
+    context.fill();
+    context.shadowColor = "transparent";
+    const wellInset = size * 0.07;
+    context.fillStyle = "#0b0b0a";
+    context.fillRect(wellInset, wellInset, size - wellInset * 2, size - wellInset * 2);
+    context.strokeStyle = "rgba(255, 255, 255, .12)";
+    context.lineWidth = Math.max(1, size * 0.012);
+    context.strokeRect(size * 0.025, size * 0.025, size * 0.95, size * 0.95);
+  } else {
+    context.fillStyle = accent;
+    context.fill();
+    context.shadowColor = "transparent";
+    const matInset = size * 0.055;
+    context.globalAlpha = 0.26;
+    context.fillStyle = "#fff4df";
+    context.fillRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
+    context.globalAlpha = 1;
+    context.strokeStyle = "rgba(255, 255, 255, .7)";
+    context.lineWidth = Math.max(1, size * 0.004);
+    context.strokeRect(inset - size * 0.027, inset - size * 0.027, size - (inset - size * 0.027) * 2, size - (inset - size * 0.027) * 2);
+    context.strokeStyle = "rgba(255, 255, 255, .34)";
+    context.strokeRect(inset - size * 0.047, inset - size * 0.047, size - (inset - size * 0.047) * 2, size - (inset - size * 0.047) * 2);
+  }
+
+  drawShareCover(context, image, inset, size);
+  context.strokeStyle = frameType === "shadowbox" ? "rgba(0, 0, 0, .72)" : "rgba(255, 255, 255, .34)";
+  context.lineWidth = Math.max(1, size * 0.006);
+  context.strokeRect(inset, inset, size - inset * 2, size - inset * 2);
+  drawShareGlass(context, size, 0.08);
+}
+
+function drawSharePanel(context, image, x, y, size, variation, frameType, index) {
   context.save();
   context.translate(x + size / 2, y + size / 2);
   context.rotate((variation.rotate * Math.PI) / 180);
   context.translate(-size / 2, -size / 2);
+
+  if (frameType !== DEFAULT_FRAME_TYPE) {
+    drawShareMaterialFrame(context, image, size, frameType, index);
+    context.restore();
+    return;
+  }
 
   roundedRectPath(context, 0, 0, size, size, size * 0.012);
   context.fillStyle = "rgba(255, 255, 255, .07)";
@@ -1082,18 +1542,7 @@ function drawSharePanel(context, image, x, y, size, variation) {
   context.shadowColor = "transparent";
 
   const inset = size * 0.13;
-  const coverSize = size - inset * 2;
-  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
-  const sourceX = (image.naturalWidth - sourceSize) / 2;
-  const sourceY = (image.naturalHeight - sourceSize) / 2;
-  context.shadowColor = "rgba(27, 25, 21, .2)";
-  context.shadowBlur = size * 0.036;
-  context.shadowOffsetY = size * 0.018;
-  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, inset, inset, coverSize, coverSize);
-  context.shadowColor = "transparent";
-
-  context.fillStyle = "rgba(255, 239, 203, .055)";
-  context.fillRect(inset, inset, coverSize, coverSize);
+  drawShareCover(context, image, inset, size);
 
   roundedRectPath(context, 0, 0, size, size, size * 0.012);
   context.fillStyle = "rgba(255, 255, 255, .018)";
@@ -1107,18 +1556,7 @@ function drawSharePanel(context, image, x, y, size, variation) {
   context.strokeStyle = "rgba(83, 101, 105, .16)";
   context.stroke();
 
-  context.save();
-  roundedRectPath(context, 0, 0, size, size, size * 0.012);
-  context.clip();
-  const reflection = context.createLinearGradient(size * 0.06, size * 0.8, size * 0.92, size * 0.08);
-  reflection.addColorStop(0, "rgba(255, 255, 255, 0)");
-  reflection.addColorStop(0.43, "rgba(255, 255, 255, 0)");
-  reflection.addColorStop(0.49, "rgba(255, 255, 255, .18)");
-  reflection.addColorStop(0.54, "rgba(255, 255, 255, .035)");
-  reflection.addColorStop(0.61, "rgba(255, 255, 255, 0)");
-  context.fillStyle = reflection;
-  context.fillRect(0, 0, size, size);
-  context.restore();
+  drawShareGlass(context, size, 0.18);
 
   const screwInset = size * 0.067;
   const screwRadius = Math.max(4.8, size * 0.021);
@@ -1160,6 +1598,8 @@ function drawShareImage(images, layout) {
       originY + position.y * maxSourceY * viewportScale + variation.y,
       panelSize,
       variation,
+      getAlbumFrameType(index),
+      index,
     );
   });
 
@@ -1343,6 +1783,15 @@ document.querySelectorAll(".layout-option").forEach((button) => {
   button.addEventListener("click", () => applyLayout(button.dataset.layout));
 });
 
+moduleConfig.addEventListener("change", changeAlbumFrame);
+closeModuleConfigButton.addEventListener("click", () => {
+  const item = configuredAlbumIndex === undefined
+    ? undefined
+    : grid.querySelector(`.record-item[data-index="${configuredAlbumIndex}"]`);
+  closeModuleConfigurator();
+  item?.focus({ preventScroll: true });
+});
+
 importButton.addEventListener("click", openImportDialog);
 resetPositionsButton.addEventListener("click", resetAlbumPositions);
 shareButton.addEventListener("click", copyShareLink);
@@ -1372,7 +1821,11 @@ grid.addEventListener("pointercancel", finishAlbumResize);
 grid.addEventListener("pointercancel", finishAlbumDrag);
 grid.addEventListener("keydown", resizeAlbumWithKeyboard);
 grid.addEventListener("keydown", moveAlbumWithKeyboard);
+grid.addEventListener("keydown", openModuleConfiguratorWithKeyboard);
 grid.addEventListener("pointerleave", resetReflection);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && moduleConfig.classList.contains("is-open")) closeModuleConfigurator();
+});
 window.addEventListener("resize", scheduleSceneFit, { passive: true });
 window.visualViewport?.addEventListener("resize", scheduleSceneFit, { passive: true });
 window.addEventListener("beforeunload", () => {
@@ -1387,6 +1840,9 @@ if (sharedState) {
   albumSizes = sharedState.sizes.length
     ? records.map((_, index) => sharedState.sizes[index] || 1)
     : records.map(() => 1);
+  albumFrameTypes = sharedState.frameTypes.length
+    ? records.map((_, index) => sharedState.frameTypes[index] || DEFAULT_FRAME_TYPE)
+    : records.map(() => DEFAULT_FRAME_TYPE);
   positionLayout = sharedState.positions.length ? sharedState.layout : "";
   importButton.querySelector("span").textContent = "重新导入";
   importButton.title = `当前墙面来自分享链接：《${importedPlaylistName}》`;

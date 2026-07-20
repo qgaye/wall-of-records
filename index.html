@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="用纯 HTML、CSS 和 JavaScript 制作的亚克力唱片墙展示效果。"
+      content="用纯 HTML、CSS 和 JavaScript 制作的可定制镜框唱片墙。"
     />
-    <title>Record Wall · 亚克力专辑墙</title>
+    <title>Record Wall · 唱片收藏墙</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -30,7 +30,7 @@
         class="reset-layout"
         id="resetAlbumPositions"
         type="button"
-        title="把所有专辑恢复到初始位置和大小"
+        title="把所有专辑恢复到初始位置、大小和亚克力镜框"
       >
         <span>重置布局</span>
       </button>
@@ -64,12 +64,61 @@
     <div class="alignment-guides" id="alignmentGuides" aria-hidden="true">
       <span class="alignment-guide alignment-guide--vertical"></span>
       <span class="alignment-guide alignment-guide--horizontal"></span>
+      <span class="spacing-guide spacing-guide--horizontal"></span>
+      <span class="spacing-guide spacing-guide--vertical"></span>
     </div>
 
     <p class="canvas-hint" id="canvasHint">
       <span aria-hidden="true">↗</span>
-      移动或缩放专辑 · 参考线出现时自动吸附
+      移动或缩放专辑 · 点击唱片打开配置 · 边缘或间距对齐时自动吸附
     </p>
+
+    <aside class="module-config" id="moduleConfig" aria-labelledby="moduleConfigTitle" aria-hidden="true" inert>
+      <header class="module-config__header">
+        <div>
+          <span class="module-config__index" id="moduleConfigIndex">MODULE 01</span>
+          <h2 id="moduleConfigTitle">唱片配置</h2>
+          <p id="moduleConfigMeta">选择一张唱片开始配置</p>
+        </div>
+        <button class="module-config__close" id="closeModuleConfig" type="button" aria-label="关闭唱片配置">
+          <span aria-hidden="true"></span>
+        </button>
+      </header>
+
+      <div class="module-config__body">
+        <section class="config-section" aria-labelledby="frameConfigTitle">
+          <div class="config-section__heading">
+            <span>FRAME</span>
+            <h3 id="frameConfigTitle">镜框类型</h3>
+          </div>
+          <fieldset class="frame-options">
+            <legend>为当前唱片选择镜框类型</legend>
+            <label class="frame-option">
+              <input type="radio" name="albumFrameType" value="acrylic" />
+              <span class="frame-option__preview frame-option__preview--acrylic"><i></i></span>
+              <span class="frame-option__copy"><strong>亚克力板</strong><small>透明 · 金属固定</small></span>
+            </label>
+            <label class="frame-option">
+              <input type="radio" name="albumFrameType" value="mat" />
+              <span class="frame-option__preview frame-option__preview--mat"><i></i></span>
+              <span class="frame-option__copy"><strong>黑色卡纸框</strong><small>窄边 · 暖白卡纸</small></span>
+            </label>
+            <label class="frame-option">
+              <input type="radio" name="albumFrameType" value="shadowbox" />
+              <span class="frame-option__preview frame-option__preview--shadowbox"><i></i></span>
+              <span class="frame-option__copy"><strong>黑色深框</strong><small>厚边 · 阴影层次</small></span>
+            </label>
+            <label class="frame-option">
+              <input type="radio" name="albumFrameType" value="colorbox" />
+              <span class="frame-option__preview frame-option__preview--colorbox"><i></i></span>
+              <span class="frame-option__copy"><strong>彩色盒框</strong><small>配色 · 双层装裱</small></span>
+            </label>
+          </fieldset>
+        </section>
+
+        <p class="module-config__note">此区域将继续承载当前唱片的更多独立配置。</p>
+      </div>
+    </aside>
 
     <dialog class="playlist-dialog" id="playlistDialog" aria-labelledby="playlistDialogTitle">
       <div class="playlist-dialog__surface">

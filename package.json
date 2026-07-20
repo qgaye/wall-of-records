@@ -2,9 +2,10 @@
   "name": "wall-of-records",
   "version": "1.0.0",
   "private": true,
-  "description": "A responsive acrylic record wall with NetEase and QQ Music playlist importing.",
+  "description": "A responsive customizable record wall with per-album frames and playlist importing.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"
