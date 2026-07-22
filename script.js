@@ -8,14 +8,21 @@ const ALIGN_SNAP_THRESHOLD = 12;
 const ALIGN_SNAP_RELEASE_THRESHOLD = 20;
 const GAP_SNAP_THRESHOLD = 18;
 const GAP_SNAP_RELEASE_THRESHOLD = 28;
+const WALL_CAMERA_FOV = 42;
+const MIN_WALL_PERSPECTIVE = -18;
+const MAX_WALL_PERSPECTIVE = 18;
+const DEFAULT_WALL_PERSPECTIVE = -8;
+const MIN_SPOTLIGHT_COUNT = 0;
+const MAX_SPOTLIGHT_COUNT = 6;
+const DEFAULT_SPOTLIGHT_COUNT = 3;
+const MIN_SPOTLIGHT_POSITION = 0.055;
+const MAX_SPOTLIGHT_POSITION = 0.945;
+const SPOTLIGHT_POSITION_GAP = 0.045;
 const DEFAULT_FRAME_TYPE = "acrylic";
 const FRAME_TYPES = {
-  acrylic: { label: "亚克力板", inset: 0.13 },
-  mat: { label: "黑色卡纸框", inset: 0.22 },
-  shadowbox: { label: "黑色深框", inset: 0.17 },
-  colorbox: { label: "彩色盒框", inset: 0.2 },
+  acrylic: { label: "亚克力夹板", inset: 0.13 },
+  glass: { label: "玻璃夹板", inset: 0.13 },
 };
-const COLOR_FRAME_ACCENTS = ["#a9433f", "#c69518", "#426f8f", "#8b5946", "#65704b", "#8c5570"];
 
 const records = [
   {
@@ -124,6 +131,11 @@ const grid = document.querySelector("#recordGrid");
 const stage = document.querySelector("#galleryStage");
 const wall = document.querySelector(".wall");
 const template = document.querySelector("#recordTemplate");
+const wallPerspectiveControl = document.querySelector("#wallPerspectiveControl");
+const wallPerspectiveValue = document.querySelector("#wallPerspectiveValue");
+const spotlightCountControl = document.querySelector("#spotlightCountControl");
+const spotlightCountValue = document.querySelector("#spotlightCountValue");
+const spotlightHandles = document.querySelector("#spotlightHandles");
 const alignmentGuides = document.querySelector("#alignmentGuides");
 const verticalGuide = alignmentGuides.querySelector(".alignment-guide--vertical");
 const horizontalGuide = alignmentGuides.querySelector(".alignment-guide--horizontal");
@@ -173,6 +185,11 @@ let canvasMetrics;
 let pointerFrame;
 let pendingPointer;
 let configuredAlbumIndex;
+let rendererSyncFrame;
+let wallPerspective = DEFAULT_WALL_PERSPECTIVE;
+let spotlightCount = DEFAULT_SPOTLIGHT_COUNT;
+let spotlightPositions = [];
+let activeSpotlightDrag;
 
 const playlistPlatforms = {
   netease: {
@@ -198,89 +215,50 @@ function getSceneSize(layout) {
   };
 }
 
-function buildGeneratedArtwork(slot, record) {
-  if (record.type === "vinyl") {
-    slot.classList.add("album-slot--vinyl");
-    slot.innerHTML = `
-      <span class="record-disc" style="--label: ${record.label}; --label-ink: ${record.labelInk}">
-        <span class="label-monogram">${record.monogram}</span>
-      </span>
-    `;
-    return;
-  }
-
-  slot.style.setProperty("--artwork", record.artwork);
-  slot.style.setProperty("--cover-ink", record.coverInk);
-  slot.innerHTML = `
-    <span class="cover-mark cover-mark--orbit" aria-hidden="true"></span>
-    <span class="cover-mark cover-mark--line" aria-hidden="true"></span>
-    <span class="cover-copy">
-      <strong>${record.title.replace("\n", "<br>")}</strong>
-      <small>${record.subtitle}</small>
-    </span>
-  `;
-}
-
 function renderRecords() {
   grid.replaceChildren();
 
   records.forEach((record, index) => {
     const fragment = template.content.cloneNode(true);
     const item = fragment.querySelector(".record-item");
-    const frame = fragment.querySelector(".acrylic-frame");
-    const slot = fragment.querySelector(".album-slot");
     const resizeHandles = [...fragment.querySelectorAll(".resize-handle")];
-    const variation = mountVariations[index];
     const imported = importedCovers[index];
     const accessibleName = imported
       ? `${imported.name}，${imported.artist}，专辑《${imported.album}》`
       : `${record.name} 专辑展示`;
 
-    item.style.setProperty("--mount-x", `${variation.x}px`);
-    item.style.setProperty("--mount-y", `${variation.y}px`);
-    item.style.setProperty("--mount-rotate", `${variation.rotate}deg`);
     item.dataset.index = String(index);
     item.dataset.frame = getAlbumFrameType(index);
-    item.style.setProperty("--frame-accent", COLOR_FRAME_ACCENTS[index % COLOR_FRAME_ACCENTS.length]);
+    item.dataset.accessibleName = accessibleName;
     item.tabIndex = 0;
     item.setAttribute("role", "group");
-    item.setAttribute("aria-label", accessibleName);
+    item.setAttribute("aria-label", `${accessibleName}，${FRAME_TYPES[getAlbumFrameType(index)].label}`);
     item.setAttribute("aria-describedby", "canvasHint");
     item.setAttribute("aria-roledescription", "可拖动专辑");
     item.setAttribute("aria-grabbed", "false");
     item.style.zIndex = String(index + 1);
-    frame.setAttribute("aria-label", `${accessibleName}，${FRAME_TYPES[getAlbumFrameType(index)].label}`);
     resizeHandles.forEach((handle) => {
       const cornerNames = { tl: "左上角", tr: "右上角", bl: "左下角", br: "右下角" };
       handle.setAttribute("aria-label", `从${cornerNames[handle.dataset.corner]}调整 ${accessibleName} 的大小`);
     });
 
-    if (imported) {
-      slot.classList.add("album-slot--uploaded");
-      slot.style.backgroundImage = `url("${imported.cover}")`;
-    } else {
-      buildGeneratedArtwork(slot, record);
-    }
-
     grid.append(fragment);
   });
 
   syncModuleConfigurator();
+  scheduleVisualRendererSync();
 }
 
 function getAlbumFrameType(index) {
-  const value = albumFrameTypes[index];
-  return FRAME_TYPES[value] ? value : DEFAULT_FRAME_TYPE;
+  const frameType = albumFrameTypes[index];
+  return FRAME_TYPES[frameType] ? frameType : DEFAULT_FRAME_TYPE;
 }
 
 function setAlbumFrameType(item, index, value) {
   const frameType = FRAME_TYPES[value] ? value : DEFAULT_FRAME_TYPE;
   albumFrameTypes[index] = frameType;
   item.dataset.frame = frameType;
-  item.querySelector(".acrylic-frame").setAttribute(
-    "aria-label",
-    `${item.getAttribute("aria-label")}，${FRAME_TYPES[frameType].label}`,
-  );
+  item.setAttribute("aria-label", `${item.dataset.accessibleName}，${FRAME_TYPES[frameType].label}`);
   if (configuredAlbumIndex === index) {
     frameTypeOptions.forEach((option) => {
       option.checked = option.value === frameType;
@@ -355,10 +333,189 @@ function getCanvasMetrics(layout) {
   const insetY = Math.min(64, Math.max(30, height * 0.06));
   const availableWidth = Math.max(1, width - insetX * 2);
   const availableHeight = Math.max(1, height - insetY * 2);
-  const scale = Math.min(availableWidth / scene.width, availableHeight / scene.height, 1.12);
+  const perspectiveFit = 1 - Math.abs(wallPerspective) * 0.0065;
+  const scale = Math.min(availableWidth / scene.width, availableHeight / scene.height, 1.12) * perspectiveFit;
   const panelSize = PANEL_SIZE * scale;
 
   return { scene, width, height, left, top, scale, panelSize };
+}
+
+function getWallCameraDistance(height) {
+  return (height / 2) / Math.tan((WALL_CAMERA_FOV * Math.PI) / 360);
+}
+
+function getWallYaw() {
+  return -wallPerspective;
+}
+
+function updateWallPerspectiveStyles(metrics) {
+  const height = metrics?.height || stage.clientHeight || window.innerHeight;
+  const cameraDistance = getWallCameraDistance(height);
+  document.documentElement.style.setProperty("--wall-perspective-angle", `${getWallYaw()}deg`);
+  document.documentElement.style.setProperty("--wall-camera-distance", `${cameraDistance.toFixed(2)}px`);
+}
+
+function updateWallPerspective(value, { refit = true } = {}) {
+  const nextValue = Math.min(MAX_WALL_PERSPECTIVE, Math.max(MIN_WALL_PERSPECTIVE, Number(value) || 0));
+  wallPerspective = nextValue;
+  wallPerspectiveControl.value = String(nextValue);
+  wallPerspectiveValue.value = nextValue === 0
+    ? "正视"
+    : `${nextValue < 0 ? "左侧" : "右侧"}近 ${Math.abs(nextValue)}°`;
+  updateWallPerspectiveStyles(canvasMetrics);
+  scheduleVisualRendererSync();
+  if (refit) scheduleSceneFit();
+}
+
+function getDefaultSpotlightPositions(count) {
+  const span = MAX_SPOTLIGHT_POSITION - MIN_SPOTLIGHT_POSITION;
+  return Array.from({ length: count }, (_, index) => (
+    MIN_SPOTLIGHT_POSITION + ((index + 1) / (count + 1)) * span
+  ));
+}
+
+function syncSpotlightPositions(count) {
+  spotlightPositions = spotlightPositions
+    .map(Number)
+    .filter(Number.isFinite)
+    .map((position) => Math.min(MAX_SPOTLIGHT_POSITION, Math.max(MIN_SPOTLIGHT_POSITION, position)))
+    .sort((a, b) => a - b);
+
+  if (!spotlightPositions.length && count) {
+    spotlightPositions = getDefaultSpotlightPositions(count);
+    return;
+  }
+
+  spotlightPositions = spotlightPositions.slice(0, count);
+  while (spotlightPositions.length < count) {
+    const boundaries = [MIN_SPOTLIGHT_POSITION, ...spotlightPositions, MAX_SPOTLIGHT_POSITION];
+    let largestGapIndex = 0;
+    for (let index = 1; index < boundaries.length - 1; index += 1) {
+      if (boundaries[index + 1] - boundaries[index] > boundaries[largestGapIndex + 1] - boundaries[largestGapIndex]) {
+        largestGapIndex = index;
+      }
+    }
+    spotlightPositions.push((boundaries[largestGapIndex] + boundaries[largestGapIndex + 1]) / 2);
+    spotlightPositions.sort((a, b) => a - b);
+  }
+}
+
+function renderSpotlightHandles() {
+  spotlightHandles.replaceChildren();
+  spotlightPositions.slice(0, spotlightCount).forEach((position, index) => {
+    const handle = document.createElement("button");
+    handle.type = "button";
+    handle.className = "spotlight-handle";
+    handle.dataset.index = String(index);
+    handle.style.setProperty("--spotlight-x", `${(position * 100).toFixed(3)}%`);
+    handle.setAttribute("role", "slider");
+    handle.setAttribute("aria-label", `移动第 ${index + 1} 盏头部射灯`);
+    handle.setAttribute("aria-valuemin", String(Math.round(MIN_SPOTLIGHT_POSITION * 100)));
+    handle.setAttribute("aria-valuemax", String(Math.round(MAX_SPOTLIGHT_POSITION * 100)));
+    handle.setAttribute("aria-valuenow", String(Math.round(position * 100)));
+    handle.title = `拖动第 ${index + 1} 盏射灯左右移动`;
+    spotlightHandles.append(handle);
+  });
+}
+
+function updateSpotlightCount(value) {
+  const nextValue = Math.round(Math.min(MAX_SPOTLIGHT_COUNT, Math.max(MIN_SPOTLIGHT_COUNT, Number(value) || 0)));
+  spotlightCount = nextValue;
+  syncSpotlightPositions(nextValue);
+  renderSpotlightHandles();
+  spotlightCountControl.value = String(nextValue);
+  spotlightCountValue.value = nextValue ? `${nextValue} 盏` : "关闭";
+  scheduleVisualRendererSync();
+}
+
+function setSpotlightPosition(index, value) {
+  if (!Number.isInteger(index) || !Number.isFinite(spotlightPositions[index])) return;
+  const lower = index > 0
+    ? spotlightPositions[index - 1] + SPOTLIGHT_POSITION_GAP
+    : MIN_SPOTLIGHT_POSITION;
+  const upper = index < spotlightCount - 1
+    ? spotlightPositions[index + 1] - SPOTLIGHT_POSITION_GAP
+    : MAX_SPOTLIGHT_POSITION;
+  const position = Math.min(upper, Math.max(lower, value));
+  spotlightPositions[index] = position;
+  const handle = spotlightHandles.querySelector(`.spotlight-handle[data-index="${index}"]`);
+  handle?.style.setProperty("--spotlight-x", `${(position * 100).toFixed(3)}%`);
+  handle?.setAttribute("aria-valuenow", String(Math.round(position * 100)));
+  scheduleVisualRendererSync();
+}
+
+function startSpotlightDrag(event) {
+  const handle = event.target.closest(".spotlight-handle");
+  const layout = layoutSettings[grid.dataset.layout || "4x2"];
+  if (!handle || !layout || event.button !== 0) return;
+  const metrics = canvasMetrics || getCanvasMetrics(layout);
+  canvasMetrics = metrics;
+  const index = Number(handle.dataset.index);
+  const wallPoint = screenPointToWall(event.clientX, event.clientY, metrics);
+  activeSpotlightDrag = {
+    handle,
+    index,
+    pointerId: event.pointerId,
+    offsetX: wallPoint.x - spotlightPositions[index] * metrics.width,
+  };
+  handle.classList.add("is-dragging");
+  handle.setPointerCapture(event.pointerId);
+  document.body.dataset.canvasInteracted = "true";
+  scheduleVisualRendererSync();
+  event.preventDefault();
+}
+
+function moveSpotlight(event) {
+  if (!activeSpotlightDrag || event.pointerId !== activeSpotlightDrag.pointerId) return;
+  const layout = layoutSettings[grid.dataset.layout || "4x2"];
+  if (!layout) return;
+  const metrics = canvasMetrics || getCanvasMetrics(layout);
+  const wallPoint = screenPointToWall(event.clientX, event.clientY, metrics);
+  setSpotlightPosition(activeSpotlightDrag.index, (wallPoint.x - activeSpotlightDrag.offsetX) / metrics.width);
+  event.preventDefault();
+}
+
+function finishSpotlightDrag(event) {
+  if (!activeSpotlightDrag || event.pointerId !== activeSpotlightDrag.pointerId) return;
+  activeSpotlightDrag.handle.classList.remove("is-dragging");
+  if (activeSpotlightDrag.handle.hasPointerCapture(event.pointerId)) {
+    activeSpotlightDrag.handle.releasePointerCapture(event.pointerId);
+  }
+  activeSpotlightDrag = undefined;
+  scheduleVisualRendererSync();
+}
+
+function moveSpotlightWithKeyboard(event) {
+  const handle = event.target.closest(".spotlight-handle");
+  if (!handle || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const index = Number(handle.dataset.index);
+  const step = event.shiftKey ? 0.05 : 0.0125;
+  const nextValue = event.key === "Home"
+    ? MIN_SPOTLIGHT_POSITION
+    : event.key === "End"
+      ? MAX_SPOTLIGHT_POSITION
+      : spotlightPositions[index] + (event.key === "ArrowLeft" ? -step : step);
+  setSpotlightPosition(index, nextValue);
+  document.body.dataset.canvasInteracted = "true";
+  event.preventDefault();
+}
+
+function screenPointToWall(clientX, clientY, metrics) {
+  const screenX = clientX - metrics.left - metrics.width / 2;
+  const screenY = clientY - metrics.top - metrics.height / 2;
+  const yaw = (getWallYaw() * Math.PI) / 180;
+  const cameraDistance = getWallCameraDistance(metrics.height);
+  const denominator = cameraDistance * Math.cos(yaw) - screenX * Math.sin(yaw);
+  if (Math.abs(denominator) < 0.001) {
+    return { x: clientX - metrics.left, y: clientY - metrics.top };
+  }
+  const wallX = (screenX * cameraDistance) / denominator;
+  const depth = cameraDistance + wallX * Math.sin(yaw);
+  const wallY = screenY * depth / cameraDistance;
+  return {
+    x: wallX + metrics.width / 2,
+    y: wallY + metrics.height / 2,
+  };
 }
 
 function buildDefaultPositions(layout, metrics) {
@@ -381,17 +538,6 @@ function buildDefaultPositions(layout, metrics) {
   });
 }
 
-function updateItemReflection(item, x, y) {
-  const index = Number(item.dataset.index);
-  const safeScale = sceneScale * getAlbumScale(index) || 1;
-  item.style.setProperty("--reflection-x", `${(-x / safeScale).toFixed(2)}px`);
-  item.style.setProperty("--reflection-y", `${(-y / safeScale).toFixed(2)}px`);
-  if (canvasMetrics) {
-    item.style.setProperty("--item-scene-width", `${(canvasMetrics.width / safeScale).toFixed(2)}px`);
-    item.style.setProperty("--item-scene-height", `${(canvasMetrics.height / safeScale).toFixed(2)}px`);
-  }
-}
-
 function getAlbumScale(index) {
   return Math.min(MAX_ALBUM_SCALE, Math.max(MIN_ALBUM_SCALE, albumSizes[index] || 1));
 }
@@ -407,10 +553,11 @@ function setItemScale(item, index, value) {
   item.querySelectorAll(".resize-handle").forEach((handle) => {
     handle.setAttribute("aria-valuenow", String(Math.round(nextScale * 100)));
   });
+  scheduleVisualRendererSync();
   return nextScale;
 }
 
-function setItemPosition(item, index, x, y, metrics, updateState = true, updateReflection = true) {
+function setItemPosition(item, index, x, y, metrics, updateState = true) {
   const panelSize = getAlbumPanelSize(index, metrics);
   const maxX = Math.max(0, metrics.width - panelSize);
   const maxY = Math.max(0, metrics.height - panelSize);
@@ -421,20 +568,72 @@ function setItemPosition(item, index, x, y, metrics, updateState = true, updateR
   item.style.setProperty("--item-y", `${nextY.toFixed(2)}px`);
   item.canvasX = nextX;
   item.canvasY = nextY;
-  if (updateReflection) updateItemReflection(item, nextX, nextY);
-
   if (updateState) {
     albumPositions[index] = {
       x: maxX ? nextX / maxX : 0,
       y: maxY ? nextY / maxY : 0,
     };
   }
+  scheduleVisualRendererSync();
+}
+
+function scheduleVisualRendererSync() {
+  if (rendererSyncFrame) return;
+  rendererSyncFrame = window.requestAnimationFrame(() => {
+    rendererSyncFrame = undefined;
+    const layout = layoutSettings[grid.dataset.layout || "4x2"];
+    const metrics = canvasMetrics || (layout ? getCanvasMetrics(layout) : undefined);
+    if (!metrics) return;
+
+    const albums = [...grid.querySelectorAll(".record-item")].map((item, index) => {
+      const imported = importedCovers[index];
+      const record = records[index];
+      return {
+        index,
+        x: Number(item.canvasX || 0),
+        y: Number(item.canvasY || 0),
+        size: getAlbumPanelSize(index, metrics),
+        rotation: mountVariations[index]?.rotate || 0,
+        zIndex: Number(item.style.zIndex) || index + 1,
+        hidden: item.hidden,
+        cover: imported?.cover || null,
+        name: imported?.album || record.name,
+        year: String(record.year || ""),
+        kind: record.type,
+        frameType: getAlbumFrameType(index),
+        label: record.label || null,
+        labelInk: record.labelInk || null,
+        monogram: record.monogram || null,
+        title: record.title || record.name,
+        subtitle: record.subtitle || String(record.year || ""),
+      };
+    });
+
+    window.dispatchEvent(new CustomEvent("record-wall:sync", {
+      detail: {
+        width: metrics.width,
+        height: metrics.height,
+        wallYaw: getWallYaw(),
+        spotlightCount,
+        spotlightPositions: spotlightPositions.slice(0, spotlightCount),
+        interacting: Boolean(activeDrag || activeResize || activeSpotlightDrag),
+        albums,
+      },
+    }));
+  });
+}
+
+function setVisualRendererInteraction(active) {
+  window.dispatchEvent(new CustomEvent("record-wall:interaction", {
+    detail: { active },
+  }));
 }
 
 function fitSceneToViewport(layout, resetPositions = false) {
   const metrics = getCanvasMetrics(layout);
   canvasMetrics = metrics;
   sceneScale = metrics.scale;
+  updateWallPerspectiveStyles(metrics);
   grid.style.setProperty("--scene-scale", sceneScale.toFixed(4));
   grid.style.setProperty("--scene-width", `${(metrics.width / sceneScale).toFixed(2)}px`);
   grid.style.setProperty("--scene-height", `${(metrics.height / sceneScale).toFixed(2)}px`);
@@ -454,8 +653,9 @@ function fitSceneToViewport(layout, resetPositions = false) {
   });
 
   if (activeDrag) {
-    activeDrag.offsetX = activeDrag.lastClientX - metrics.left - activeDrag.item.canvasX;
-    activeDrag.offsetY = activeDrag.lastClientY - metrics.top - activeDrag.item.canvasY;
+    const wallPoint = screenPointToWall(activeDrag.lastClientX, activeDrag.lastClientY, metrics);
+    activeDrag.offsetX = wallPoint.x - activeDrag.item.canvasX;
+    activeDrag.offsetY = wallPoint.y - activeDrag.item.canvasY;
   }
 }
 
@@ -488,29 +688,13 @@ function applyLayout(layoutName) {
   updateDialogLayoutSummary(layout);
   window.cancelAnimationFrame(fitFrame);
   fitFrame = window.requestAnimationFrame(() => fitSceneToViewport(layout, layoutChanged));
-}
-
-function updateReflectionFromPointer(clientX, clientY) {
-  if (!canvasMetrics) return;
-  const normalizedX = (clientX - canvasMetrics.left) / canvasMetrics.width - 0.5;
-  const normalizedY = (clientY - canvasMetrics.top) / canvasMetrics.height - 0.5;
-  grid.style.setProperty("--reflection-shift-x", `${(-normalizedX * 14).toFixed(2)}px`);
-  grid.style.setProperty("--reflection-shift-y", `${(-normalizedY * 6).toFixed(2)}px`);
-}
-
-function resetReflection() {
-  if (!activeDrag && !activeResize && pointerFrame) {
-    window.cancelAnimationFrame(pointerFrame);
-    pointerFrame = undefined;
-    pendingPointer = undefined;
-  }
-  grid.style.setProperty("--reflection-shift-x", "0px");
-  grid.style.setProperty("--reflection-shift-y", "0px");
+  scheduleVisualRendererSync();
 }
 
 function bringItemToFront(item) {
   topStackOrder += 1;
   item.style.zIndex = String(topStackOrder);
+  scheduleVisualRendererSync();
 }
 
 function startAlbumDrag(event) {
@@ -527,12 +711,13 @@ function startAlbumDrag(event) {
   canvasMetrics = metrics;
   const x = item.canvasX || 0;
   const y = item.canvasY || 0;
+  const wallPoint = screenPointToWall(event.clientX, event.clientY, metrics);
   activeDrag = {
     item,
     index: Number(item.dataset.index),
     pointerId: event.pointerId,
-    offsetX: event.clientX - metrics.left - x,
-    offsetY: event.clientY - metrics.top - y,
+    offsetX: wallPoint.x - x,
+    offsetY: wallPoint.y - y,
     lastClientX: event.clientX,
     lastClientY: event.clientY,
     startClientX: event.clientX,
@@ -542,6 +727,7 @@ function startAlbumDrag(event) {
     targets: collectAlignmentTargets(Number(item.dataset.index), metrics),
     snapCandidates: {},
   };
+  setVisualRendererInteraction(true);
 
   hideAlignmentGuides();
   bringItemToFront(item);
@@ -794,10 +980,11 @@ function showAlignmentFeedback({ xSnap, ySnap, item }) {
 
 function moveAlbumFromPointer(pointer) {
   if (!activeDrag || !canvasMetrics) return;
+  const wallPoint = screenPointToWall(pointer.clientX, pointer.clientY, canvasMetrics);
   const maxX = Math.max(0, canvasMetrics.width - activeDrag.size);
   const maxY = Math.max(0, canvasMetrics.height - activeDrag.size);
-  const rawX = Math.min(maxX, Math.max(0, pointer.clientX - canvasMetrics.left - activeDrag.offsetX));
-  const rawY = Math.min(maxY, Math.max(0, pointer.clientY - canvasMetrics.top - activeDrag.offsetY));
+  const rawX = Math.min(maxX, Math.max(0, wallPoint.x - activeDrag.offsetX));
+  const rawY = Math.min(maxY, Math.max(0, wallPoint.y - activeDrag.offsetY));
   const snapX = findMoveSnap("x", rawX, rawY);
   const snapY = findMoveSnap("y", rawY, snapX?.position ?? rawX);
 
@@ -807,8 +994,6 @@ function moveAlbumFromPointer(pointer) {
     snapX?.position ?? rawX,
     snapY?.position ?? rawY,
     canvasMetrics,
-    true,
-    false,
   );
   showAlignmentFeedback({
     xSnap: snapX,
@@ -978,6 +1163,7 @@ function startAlbumResize(event) {
   const index = Number(item.dataset.index);
   const startSize = getAlbumPanelSize(index, metrics);
   const directions = getCornerDirections(handle.dataset.corner);
+  const wallPoint = screenPointToWall(event.clientX, event.clientY, metrics);
   const anchorX = directions.x === 1 ? item.canvasX : item.canvasX + startSize;
   const anchorY = directions.y === 1 ? item.canvasY : item.canvasY + startSize;
   activeResize = {
@@ -986,8 +1172,8 @@ function startAlbumResize(event) {
     index,
     corner: handle.dataset.corner,
     pointerId: event.pointerId,
-    startClientX: event.clientX,
-    startClientY: event.clientY,
+    startWallX: wallPoint.x,
+    startWallY: wallPoint.y,
     startSize,
     anchorX,
     anchorY,
@@ -1001,6 +1187,7 @@ function startAlbumResize(event) {
     ),
     targets: collectAlignmentTargets(index, metrics),
   };
+  setVisualRendererInteraction(true);
 
   hideAlignmentGuides();
   bringItemToFront(item);
@@ -1013,8 +1200,9 @@ function startAlbumResize(event) {
 
 function resizeAlbumFromPointer(pointer) {
   if (!activeResize || !canvasMetrics) return;
-  const deltaX = activeResize.xDirection * (pointer.clientX - activeResize.startClientX);
-  const deltaY = activeResize.yDirection * (pointer.clientY - activeResize.startClientY);
+  const wallPoint = screenPointToWall(pointer.clientX, pointer.clientY, canvasMetrics);
+  const deltaX = activeResize.xDirection * (wallPoint.x - activeResize.startWallX);
+  const deltaY = activeResize.yDirection * (wallPoint.y - activeResize.startWallY);
   const delta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : deltaY;
   const rawSize = Math.min(activeResize.maxSize, Math.max(activeResize.minSize, activeResize.startSize + delta));
   const snap = findResizeSnap(rawSize);
@@ -1028,8 +1216,6 @@ function resizeAlbumFromPointer(pointer) {
     nextX,
     nextY,
     canvasMetrics,
-    true,
-    false,
   );
   activeResize.currentSize = nextSize;
   updateAlignmentGuides(nextSize, snap);
@@ -1051,7 +1237,6 @@ function flushPointerFrame() {
     return;
   }
 
-  updateReflectionFromPointer(pointer.clientX, pointer.clientY);
 }
 
 function moveAlbum(event) {
@@ -1062,6 +1247,7 @@ function moveAlbum(event) {
       activeDrag.didMove = true;
     }
   }
+  if (!activeDrag && !activeResize) return;
   pendingPointer = {
     clientX: event.clientX,
     clientY: event.clientY,
@@ -1080,14 +1266,13 @@ function finishAlbumDrag(event) {
   const { item, didMove } = activeDrag;
   const cancelled = event.type === "pointercancel";
   if (!cancelled) moveAlbumFromPointer({ clientX: event.clientX, clientY: event.clientY });
-  updateItemReflection(item, item.canvasX, item.canvasY);
   hideAlignmentGuides();
-  if (!cancelled) updateReflectionFromPointer(event.clientX, event.clientY);
   grid.classList.remove("is-dragging");
   item.classList.remove("is-dragging");
   item.setAttribute("aria-grabbed", "false");
   if (item.hasPointerCapture(event.pointerId)) item.releasePointerCapture(event.pointerId);
   activeDrag = undefined;
+  setVisualRendererInteraction(false);
   if (!cancelled && !didMove) openModuleConfigurator(item);
 }
 
@@ -1101,12 +1286,12 @@ function finishAlbumResize(event) {
   if (event.type !== "pointercancel") {
     resizeAlbumFromPointer({ clientX: event.clientX, clientY: event.clientY });
   }
-  updateItemReflection(item, item.canvasX, item.canvasY);
   hideAlignmentGuides();
   grid.classList.remove("is-resizing");
   item.classList.remove("is-resizing");
   if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
   activeResize = undefined;
+  setVisualRendererInteraction(false);
 }
 
 function resizeAlbumWithKeyboard(event) {
@@ -1189,6 +1374,8 @@ function resetAlbumPositions() {
   if (!layout) return;
   albumSizes = records.map(() => 1);
   albumFrameTypes = records.map(() => DEFAULT_FRAME_TYPE);
+  spotlightPositions = [];
+  updateSpotlightCount(DEFAULT_SPOTLIGHT_COUNT);
   hideAlignmentGuides();
   fitSceneToViewport(layout, true);
   grid.querySelectorAll(".record-item").forEach((item, index) => {
@@ -1204,6 +1391,7 @@ function resetAlbumPositions() {
   window.setTimeout(() => {
     label.textContent = "重置布局";
   }, 1200);
+  scheduleVisualRendererSync();
 }
 
 function encodeBase64Url(value) {
@@ -1237,7 +1425,7 @@ function isAllowedSharedCover(value) {
 function compactShareState() {
   const layout = layoutSettings[grid.dataset.layout || "4x2"];
   return {
-    v: 4,
+    v: 7,
     l: grid.dataset.layout || "4x2",
     p: importedPlaylistName,
     t: importedCovers.slice(0, records.length).map((track) => ({
@@ -1252,6 +1440,9 @@ function compactShareState() {
     ]),
     s: albumSizes.slice(0, layout.visible).map((_, index) => Number(getAlbumScale(index).toFixed(3))),
     f: albumFrameTypes.slice(0, layout.visible).map((_, index) => getAlbumFrameType(index)),
+    q: wallPerspective,
+    h: spotlightCount,
+    r: spotlightPositions.slice(0, spotlightCount).map((position) => Number(position.toFixed(POSITION_PRECISION))),
   };
 }
 
@@ -1261,7 +1452,7 @@ function readShareState() {
 
   try {
     const state = decodeBase64Url(encoded);
-    if (![1, 2, 3, 4].includes(state?.v) || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
+    if (![1, 2, 3, 4, 5, 6, 7].includes(state?.v) || !layoutSettings[state.l] || !Array.isArray(state.t)) return null;
 
     const tracks = state.t.slice(0, records.length).map((track) => ({
       name: String(track?.n || "未命名歌曲").slice(0, 160),
@@ -1293,6 +1484,22 @@ function readShareState() {
       ? state.f.slice(0, records.length).map(String)
       : [];
     const hasValidFrameTypes = frameTypes.length >= tracks.length && frameTypes.every((frameType) => FRAME_TYPES[frameType]);
+    const perspective = state.v >= 5 ? Number(state.q) : DEFAULT_WALL_PERSPECTIVE;
+    const hasValidPerspective = Number.isFinite(perspective) &&
+      perspective >= MIN_WALL_PERSPECTIVE && perspective <= MAX_WALL_PERSPECTIVE;
+    const sharedSpotlightCount = state.v >= 6 ? Number(state.h) : DEFAULT_SPOTLIGHT_COUNT;
+    const hasValidSpotlightCount = Number.isInteger(sharedSpotlightCount) &&
+      sharedSpotlightCount >= MIN_SPOTLIGHT_COUNT && sharedSpotlightCount <= MAX_SPOTLIGHT_COUNT;
+    const sharedSpotlightPositions = state.v >= 7 && Array.isArray(state.r)
+      ? state.r.slice(0, sharedSpotlightCount).map(Number)
+      : [];
+    const hasValidSpotlightPositions = sharedSpotlightPositions.length === sharedSpotlightCount &&
+      sharedSpotlightPositions.every((position, index) => (
+        Number.isFinite(position) &&
+        position >= MIN_SPOTLIGHT_POSITION &&
+        position <= MAX_SPOTLIGHT_POSITION &&
+        (index === 0 || position - sharedSpotlightPositions[index - 1] >= SPOTLIGHT_POSITION_GAP)
+      ));
 
     return {
       layout: state.l,
@@ -1301,6 +1508,9 @@ function readShareState() {
       positions: hasValidPositions ? positions : [],
       sizes: hasValidSizes ? sizes : [],
       frameTypes: hasValidFrameTypes ? frameTypes : [],
+      perspective: hasValidPerspective ? perspective : DEFAULT_WALL_PERSPECTIVE,
+      spotlightCount: hasValidSpotlightCount ? sharedSpotlightCount : DEFAULT_SPOTLIGHT_COUNT,
+      spotlightPositions: hasValidSpotlightPositions ? sharedSpotlightPositions : [],
     };
   } catch {
     return null;
@@ -1375,256 +1585,32 @@ function loadCanvasCover(cover) {
   });
 }
 
-function roundedRectPath(context, x, y, width, height, radius) {
-  const safeRadius = Math.min(radius, width / 2, height / 2);
-  context.beginPath();
-  context.moveTo(x + safeRadius, y);
-  context.arcTo(x + width, y, x + width, y + height, safeRadius);
-  context.arcTo(x + width, y + height, x, y + height, safeRadius);
-  context.arcTo(x, y + height, x, y, safeRadius);
-  context.arcTo(x, y, x + width, y, safeRadius);
-  context.closePath();
-}
-
-function drawShareWallBackground(context, width, height) {
-  const wallTone = context.createLinearGradient(0, 0, width, height);
-  wallTone.addColorStop(0, "#e2ded3");
-  wallTone.addColorStop(0.52, "#d9d4c8");
-  wallTone.addColorStop(1, "#cdc7ba");
-  context.fillStyle = wallTone;
-  context.fillRect(0, 0, width, height);
-
-  const ceilingLight = context.createRadialGradient(width * 0.5, -height * 0.06, 0, width * 0.5, 0, width * 0.64);
-  ceilingLight.addColorStop(0, "rgba(255, 247, 222, .78)");
-  ceilingLight.addColorStop(0.46, "rgba(255, 238, 198, .25)");
-  ceilingLight.addColorStop(1, "rgba(255, 238, 198, 0)");
-  context.fillStyle = ceilingLight;
-  context.fillRect(0, 0, width, height);
-
-  let seed = 1487;
-  context.fillStyle = "rgba(60, 55, 47, .022)";
-  for (let index = 0; index < 3200; index += 1) {
-    seed = (seed * 16807) % 2147483647;
-    const x = (seed / 2147483647) * width;
-    seed = (seed * 16807) % 2147483647;
-    const y = (seed / 2147483647) * height;
-    context.fillRect(x, y, 1, 1);
-  }
-}
-
-function drawShareScrew(context, x, y, radius) {
-  const metal = context.createRadialGradient(x - radius * 0.34, y - radius * 0.36, radius * 0.08, x, y, radius);
-  metal.addColorStop(0, "#ffffff");
-  metal.addColorStop(0.22, "#d9d7d1");
-  metal.addColorStop(0.62, "#86857f");
-  metal.addColorStop(0.82, "#bbb8af");
-  metal.addColorStop(1, "#5e5d58");
-  context.beginPath();
-  context.arc(x, y, radius, 0, Math.PI * 2);
-  context.fillStyle = metal;
-  context.shadowColor = "rgba(28, 27, 23, .42)";
-  context.shadowBlur = radius * 0.65;
-  context.shadowOffsetX = radius * 0.24;
-  context.shadowOffsetY = radius * 0.36;
-  context.fill();
-  context.shadowColor = "transparent";
-  context.lineWidth = Math.max(1, radius * 0.12);
-  context.strokeStyle = "rgba(54, 53, 49, .5)";
-  context.stroke();
-}
-
-function drawShareCover(context, image, inset, size) {
-  const coverSize = size - inset * 2;
-  const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
-  const sourceX = (image.naturalWidth - sourceSize) / 2;
-  const sourceY = (image.naturalHeight - sourceSize) / 2;
-  context.shadowColor = "rgba(27, 25, 21, .22)";
-  context.shadowBlur = size * 0.036;
-  context.shadowOffsetY = size * 0.018;
-  context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, inset, inset, coverSize, coverSize);
-  context.shadowColor = "transparent";
-  context.fillStyle = "rgba(255, 239, 203, .045)";
-  context.fillRect(inset, inset, coverSize, coverSize);
-}
-
-function drawShareGlass(context, size, opacity = 0.12) {
-  context.save();
-  roundedRectPath(context, 0, 0, size, size, size * 0.012);
-  context.clip();
-  const reflection = context.createLinearGradient(size * 0.06, size * 0.8, size * 0.92, size * 0.08);
-  reflection.addColorStop(0, "rgba(255, 255, 255, 0)");
-  reflection.addColorStop(0.43, "rgba(255, 255, 255, 0)");
-  reflection.addColorStop(0.49, `rgba(255, 255, 255, ${opacity})`);
-  reflection.addColorStop(0.54, `rgba(255, 255, 255, ${opacity * 0.2})`);
-  reflection.addColorStop(0.61, "rgba(255, 255, 255, 0)");
-  context.fillStyle = reflection;
-  context.fillRect(0, 0, size, size);
-  context.restore();
-}
-
-function drawShareMaterialFrame(context, image, size, frameType, index) {
-  const inset = size * FRAME_TYPES[frameType].inset;
-  const accent = COLOR_FRAME_ACCENTS[index % COLOR_FRAME_ACCENTS.length];
-
-  roundedRectPath(context, 0, 0, size, size, size * 0.012);
-  context.shadowColor = "rgba(41, 36, 29, .28)";
-  context.shadowBlur = size * 0.075;
-  context.shadowOffsetX = size * 0.026;
-  context.shadowOffsetY = size * 0.064;
-
-  if (frameType === "mat") {
-    context.fillStyle = "#191917";
-    context.fill();
-    context.shadowColor = "transparent";
-    const matInset = size * 0.052;
-    context.fillStyle = "#e9e5dc";
-    context.fillRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
-    context.strokeStyle = "rgba(60, 56, 49, .18)";
-    context.lineWidth = Math.max(1, size * 0.004);
-    context.strokeRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
-  } else if (frameType === "shadowbox") {
-    const blackFrame = context.createLinearGradient(0, 0, size, size);
-    blackFrame.addColorStop(0, "#373631");
-    blackFrame.addColorStop(0.24, "#11110f");
-    blackFrame.addColorStop(0.72, "#20201d");
-    blackFrame.addColorStop(1, "#080807");
-    context.fillStyle = blackFrame;
-    context.fill();
-    context.shadowColor = "transparent";
-    const wellInset = size * 0.07;
-    context.fillStyle = "#0b0b0a";
-    context.fillRect(wellInset, wellInset, size - wellInset * 2, size - wellInset * 2);
-    context.strokeStyle = "rgba(255, 255, 255, .12)";
-    context.lineWidth = Math.max(1, size * 0.012);
-    context.strokeRect(size * 0.025, size * 0.025, size * 0.95, size * 0.95);
-  } else {
-    context.fillStyle = accent;
-    context.fill();
-    context.shadowColor = "transparent";
-    const matInset = size * 0.055;
-    context.globalAlpha = 0.26;
-    context.fillStyle = "#fff4df";
-    context.fillRect(matInset, matInset, size - matInset * 2, size - matInset * 2);
-    context.globalAlpha = 1;
-    context.strokeStyle = "rgba(255, 255, 255, .7)";
-    context.lineWidth = Math.max(1, size * 0.004);
-    context.strokeRect(inset - size * 0.027, inset - size * 0.027, size - (inset - size * 0.027) * 2, size - (inset - size * 0.027) * 2);
-    context.strokeStyle = "rgba(255, 255, 255, .34)";
-    context.strokeRect(inset - size * 0.047, inset - size * 0.047, size - (inset - size * 0.047) * 2, size - (inset - size * 0.047) * 2);
-  }
-
-  drawShareCover(context, image, inset, size);
-  context.strokeStyle = frameType === "shadowbox" ? "rgba(0, 0, 0, .72)" : "rgba(255, 255, 255, .34)";
-  context.lineWidth = Math.max(1, size * 0.006);
-  context.strokeRect(inset, inset, size - inset * 2, size - inset * 2);
-  drawShareGlass(context, size, 0.08);
-}
-
-function drawSharePanel(context, image, x, y, size, variation, frameType, index) {
-  context.save();
-  context.translate(x + size / 2, y + size / 2);
-  context.rotate((variation.rotate * Math.PI) / 180);
-  context.translate(-size / 2, -size / 2);
-
-  if (frameType !== DEFAULT_FRAME_TYPE) {
-    drawShareMaterialFrame(context, image, size, frameType, index);
-    context.restore();
-    return;
-  }
-
-  roundedRectPath(context, 0, 0, size, size, size * 0.012);
-  context.fillStyle = "rgba(255, 255, 255, .07)";
-  context.shadowColor = "rgba(45, 40, 32, .24)";
-  context.shadowBlur = size * 0.075;
-  context.shadowOffsetX = size * 0.025;
-  context.shadowOffsetY = size * 0.062;
-  context.fill();
-  context.shadowColor = "transparent";
-
-  const inset = size * 0.13;
-  drawShareCover(context, image, inset, size);
-
-  roundedRectPath(context, 0, 0, size, size, size * 0.012);
-  context.fillStyle = "rgba(255, 255, 255, .018)";
-  context.fill();
-  context.lineWidth = Math.max(1.2, size * 0.006);
-  context.strokeStyle = "rgba(238, 248, 246, .58)";
-  context.stroke();
-
-  roundedRectPath(context, size * 0.012, size * 0.012, size * 0.976, size * 0.976, size * 0.008);
-  context.lineWidth = Math.max(0.8, size * 0.003);
-  context.strokeStyle = "rgba(83, 101, 105, .16)";
-  context.stroke();
-
-  drawShareGlass(context, size, 0.18);
-
-  const screwInset = size * 0.067;
-  const screwRadius = Math.max(4.8, size * 0.021);
-  drawShareScrew(context, screwInset, screwInset, screwRadius);
-  drawShareScrew(context, size - screwInset, screwInset, screwRadius);
-  drawShareScrew(context, screwInset, size - screwInset, screwRadius);
-  drawShareScrew(context, size - screwInset, size - screwInset, screwRadius);
-  context.restore();
-}
-
-function drawShareImage(images, layout) {
-  const width = 1600;
-  const height = 1000;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d", { alpha: false });
-  drawShareWallBackground(context, width, height);
-
-  const sourceWidth = stage.clientWidth || width;
-  const sourceHeight = stage.clientHeight || height;
-  const viewportScale = Math.min(width / sourceWidth, height / sourceHeight);
-  const viewportWidth = sourceWidth * viewportScale;
-  const viewportHeight = sourceHeight * viewportScale;
-  const originX = (width - viewportWidth) / 2;
-  const originY = (height - viewportHeight) / 2;
-  images.forEach((image, index) => {
-    if (index >= layout.visible) return;
-    const variation = mountVariations[index] || mountVariations[0];
-    const position = albumPositions[index] || { x: 0.5, y: 0.5 };
-    const sourcePanelSize = PANEL_SIZE * sceneScale * getAlbumScale(index);
-    const panelSize = sourcePanelSize * viewportScale;
-    const maxSourceX = Math.max(0, sourceWidth - sourcePanelSize);
-    const maxSourceY = Math.max(0, sourceHeight - sourcePanelSize);
-    drawSharePanel(
-      context,
-      image,
-      originX + position.x * maxSourceX * viewportScale + variation.x,
-      originY + position.y * maxSourceY * viewportScale + variation.y,
-      panelSize,
-      variation,
-      getAlbumFrameType(index),
-      index,
-    );
-  });
-
-  const vignette = context.createRadialGradient(width / 2, height / 2, height * 0.34, width / 2, height / 2, width * 0.68);
-  vignette.addColorStop(0, "rgba(42, 38, 31, 0)");
-  vignette.addColorStop(1, "rgba(42, 38, 31, .09)");
-  context.fillStyle = vignette;
-  context.fillRect(0, 0, width, height);
-
-  context.save();
-  context.font = '500 17px "Avenir Next", Avenir, sans-serif';
-  context.textAlign = "right";
-  context.textBaseline = "alphabetic";
-  context.fillStyle = "rgba(56, 52, 45, .24)";
-  context.fillText("presented by spin.qgaye.me", width - 48, height - 38);
-  context.restore();
-  return canvas;
-}
-
-function canvasToBlob(canvas) {
+function requestRenderedShareImage() {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("图片导出失败"));
-    }, "image/png");
+    if (document.body.dataset.webglUnavailable === "true") {
+      reject(new Error("当前浏览器无法渲染分享图片"));
+      return;
+    }
+
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("分享图片渲染超时，请重试"));
+    }, 12000);
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      callback(value);
+    };
+
+    window.dispatchEvent(new CustomEvent("record-wall:export", {
+      detail: {
+        resolve: (blob) => finish(resolve, blob),
+        reject: (error) => finish(reject, error),
+      },
+    }));
   });
 }
 
@@ -1641,20 +1627,27 @@ async function generateShareImage() {
 
   try {
     if (!tracks.length) throw new Error("请先导入歌单，再生成分享图片");
-    const images = await Promise.all(tracks.map((track) => loadCanvasCover(track.cover)));
+    await Promise.all(tracks.map((track) => loadCanvasCover(track.cover)));
     if (generation !== shareImageGeneration) return;
 
-    const canvas = drawShareImage(images, layout);
-    const blob = await canvasToBlob(canvas);
+    scheduleVisualRendererSync();
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    const blob = await requestRenderedShareImage();
     if (generation !== shareImageGeneration) return;
 
     if (shareImageObjectUrl) URL.revokeObjectURL(shareImageObjectUrl);
     shareImageObjectUrl = URL.createObjectURL(blob);
     shareImagePreview.src = shareImageObjectUrl;
+    await shareImagePreview.decode();
+    if (generation !== shareImageGeneration) return;
+    shareImageStage.style.setProperty(
+      "--share-image-aspect",
+      `${shareImagePreview.naturalWidth} / ${shareImagePreview.naturalHeight}`,
+    );
     shareImagePreview.hidden = false;
     shareImageStage.dataset.state = "ready";
     shareImageStage.setAttribute("aria-busy", "false");
-    shareImageStatus.textContent = "1600 × 1000 PNG · 长按或右键上方图片即可保存";
+    shareImageStatus.textContent = `${shareImagePreview.naturalWidth} × ${shareImagePreview.naturalHeight} PNG · 长按或右键上方图片即可保存`;
   } catch (error) {
     if (generation !== shareImageGeneration) return;
     shareImageStage.dataset.state = "error";
@@ -1801,6 +1794,13 @@ document.querySelector("#cancelPlaylistImport").addEventListener("click", closeI
 document.querySelector("#closeShareImageDialog").addEventListener("click", closeShareImageDialog);
 playlistForm.addEventListener("submit", importPlaylist);
 platformOptions.forEach((option) => option.addEventListener("change", updatePlatformUI));
+wallPerspectiveControl.addEventListener("input", (event) => updateWallPerspective(event.target.value));
+spotlightCountControl.addEventListener("input", (event) => updateSpotlightCount(event.target.value));
+spotlightHandles.addEventListener("pointerdown", startSpotlightDrag);
+spotlightHandles.addEventListener("pointermove", moveSpotlight);
+spotlightHandles.addEventListener("pointerup", finishSpotlightDrag);
+spotlightHandles.addEventListener("pointercancel", finishSpotlightDrag);
+spotlightHandles.addEventListener("keydown", moveSpotlightWithKeyboard);
 playlistDialog.addEventListener("cancel", stopImportRequest);
 playlistDialog.addEventListener("click", (event) => {
   if (event.target === playlistDialog) closeImportDialog();
@@ -1822,7 +1822,6 @@ grid.addEventListener("pointercancel", finishAlbumDrag);
 grid.addEventListener("keydown", resizeAlbumWithKeyboard);
 grid.addEventListener("keydown", moveAlbumWithKeyboard);
 grid.addEventListener("keydown", openModuleConfiguratorWithKeyboard);
-grid.addEventListener("pointerleave", resetReflection);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && moduleConfig.classList.contains("is-open")) closeModuleConfigurator();
 });
@@ -1843,11 +1842,14 @@ if (sharedState) {
   albumFrameTypes = sharedState.frameTypes.length
     ? records.map((_, index) => sharedState.frameTypes[index] || DEFAULT_FRAME_TYPE)
     : records.map(() => DEFAULT_FRAME_TYPE);
+  spotlightPositions = sharedState.spotlightPositions;
   positionLayout = sharedState.positions.length ? sharedState.layout : "";
   importButton.querySelector("span").textContent = "重新导入";
   importButton.title = `当前墙面来自分享链接：《${importedPlaylistName}》`;
 }
 
+updateWallPerspective(sharedState?.perspective ?? DEFAULT_WALL_PERSPECTIVE, { refit: false });
+updateSpotlightCount(sharedState?.spotlightCount ?? DEFAULT_SPOTLIGHT_COUNT);
 renderRecords();
 applyLayout(sharedState?.layout || "4x2");
 enableSharing();

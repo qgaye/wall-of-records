@@ -6,12 +6,15 @@ const { randomInt } = require("node:crypto");
 const HOST = process.env.RECORD_WALL_HOST || "127.0.0.1";
 const PORT = Number(process.env.RECORD_WALL_PORT) || 8000;
 const ROOT = __dirname;
+const STATIC_ROOT = path.join(ROOT, "dist");
+const IS_VITE_DEV = process.argv.includes("--vite");
 const MAX_BODY_SIZE = 16 * 1024;
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
 const LOG_READ_CHUNK_SIZE = 64 * 1024;
 const IMPORT_LOG_FILE =
   process.env.RECORD_WALL_IMPORT_LOG || path.join(ROOT, "logs", "playlist-imports.jsonl");
 let importLogWriteQueue = Promise.resolve();
+let viteDevServer;
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -754,9 +757,9 @@ async function serveStatic(request, response) {
       : pathname === "/manage"
         ? "manage.html"
         : pathname.replace(/^\/+/, "");
-  const filePath = path.resolve(ROOT, relativePath);
+  const filePath = path.resolve(STATIC_ROOT, relativePath);
 
-  if (filePath !== ROOT && !filePath.startsWith(`${ROOT}${path.sep}`)) {
+  if (filePath !== STATIC_ROOT && !filePath.startsWith(`${STATIC_ROOT}${path.sep}`)) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
@@ -815,12 +818,40 @@ const server = http.createServer(async (request, response) => {
     response.end("Method not allowed");
     return;
   }
+
+  if (IS_VITE_DEV && viteDevServer) {
+    const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    if (requestUrl.pathname === "/share") request.url = `/index.html${requestUrl.search}`;
+    if (requestUrl.pathname === "/manage") request.url = `/manage.html${requestUrl.search}`;
+    viteDevServer.middlewares(request, response, (error) => {
+      if (response.writableEnded) return;
+      response.writeHead(error ? 500 : 404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end(error?.message || "Not found");
+    });
+    return;
+  }
+
   await serveStatic(request, response);
 });
 
-if (require.main === module) {
+async function startServer() {
+  if (IS_VITE_DEV) {
+    const { createServer } = await import("vite");
+    viteDevServer = await createServer({
+      server: { middlewareMode: true, hmr: false },
+      appType: "mpa",
+    });
+  }
+
   server.listen(PORT, HOST, () => {
-    console.log(`Record Wall: http://${HOST}:${PORT}`);
+    console.log(`Record Wall${IS_VITE_DEV ? " · Vite" : ""}: http://${HOST}:${PORT}`);
+  });
+}
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
   });
 }
 

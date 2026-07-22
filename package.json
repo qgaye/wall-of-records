@@ -4,10 +4,21 @@
   "private": true,
   "description": "A responsive customizable record wall with per-album frames and playlist importing.",
   "scripts": {
+    "build": "vite build && tsc --noEmit",
+    "dev": "node server.js --vite",
+    "prestart": "npm run build",
     "start": "node server.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
   }
 }
